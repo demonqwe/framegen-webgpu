@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Anime FrameGen AI (WebGPU 60 FPS)",
+  "name": "FrameGen WebGPU (60 FPS & Video Scaler)",
   "version": "1.0.5",
-  "description": "Real-time AI Frame Generation (24 -> 48/60 FPS) via WebGPU + Anime4K Line Thinning",
+  "description": "Hardware 60 FPS Frame Generation & Video Scaler (Anime4K / AMD FSR / Bicubic) via WebGPU",
   "permissions": [
     "storage",
     "activeTab",
