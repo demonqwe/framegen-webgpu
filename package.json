@@ -1,7 +1,7 @@
 {
-  "name": "anime-framegen-webgpu",
+  "name": "framegen-webgpu",
   "version": "1.0.0",
-  "description": "Client-side Anime Frame Interpolation (RIFE FP16 WebGPU) + Anime4K WGSL Line Thinning Chrome Extension",
+  "description": "Hardware 60 FPS Frame Generation & Video Scaler (Anime4K / AMD FSR / Bicubic) via WebGPU",
   "type": "module",
   "scripts": {
     "dev": "vite",
