@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build artifacts (dist can be built via npm run build, zip attached to release)
+dist/
+FrameGen-VideoUpscaler.zip
+
+# Temporary development files
+*.py
+*.log
+transcript_clean.txt
+kodik_search.txt
+user_inputs.txt
+
+# Editor & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

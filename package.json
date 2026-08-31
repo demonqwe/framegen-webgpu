@@ -1,0 +1,23 @@
+{
+  "name": "anime-framegen-webgpu",
+  "version": "1.0.0",
+  "description": "Client-side Anime Frame Interpolation (RIFE FP16 WebGPU) + Anime4K WGSL Line Thinning Chrome Extension",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "type-check": "tsc --noEmit",
+    "pack": "npm run build && tar.exe -a -cf FrameGen-VideoUpscaler.zip -C dist .",
+    "download-models": "node scripts/download-models.js"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.21.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.308",
+    "@types/node": "^22.13.9",
+    "@webgpu/types": "^0.1.54",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

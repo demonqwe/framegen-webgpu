@@ -1,0 +1,727 @@
+import { initWebGPU, configureCanvas, GPUContextBundle } from '../webgpu/gpu-context';
+import { Anime4KPass } from '../webgpu/anime4k-pass';
+import { OverlayManager } from './overlay-manager';
+import { FrameScheduler, SchedulerOptions } from './frame-scheduler';
+
+interface ExtensionSettings extends SchedulerOptions {
+  showSideControls: boolean;
+  showDebug: boolean;
+}
+
+function isExtensionValid(): boolean {
+  try {
+    return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+  } catch {
+    return false;
+  }
+}
+
+function safeStorageSet(data: Record<string, any>): void {
+  if (!isExtensionValid()) return;
+  try {
+    chrome.storage.local.set(data);
+  } catch {}
+}
+
+function safeStorageGet(keys: string[], cb: (res: any) => void): void {
+  if (!isExtensionValid()) return;
+  try {
+    chrome.storage.local.get(keys, cb);
+  } catch {}
+}
+
+class ContentController {
+  private overlayManager: OverlayManager;
+  private gpuBundle: GPUContextBundle | null = null;
+  private anime4kPass: Anime4KPass | null = null;
+  private scheduler: FrameScheduler | null = null;
+  private currentVideo: HTMLVideoElement | null = null;
+  private sidePillElement: HTMLElement | null = null;
+  private debugHudElement: HTMLElement | null = null;
+  private showDebugHud = false;
+  private vsrBypass = false;
+  private isAttaching = false;
+
+  private settings: ExtensionSettings = {
+    enabled: true,
+    targetFpsMode: '60fps',
+    resolutionProfile: 'auto',
+    anime4kParams: { strength: 0.8, thinningThreshold: 0.05 },
+    autoDisableWhenNativeOrHigher: true,
+    showSideControls: true,
+    showDebug: false
+  };
+
+  constructor() {
+    this.overlayManager = new OverlayManager();
+    this.init();
+  }
+
+  private getHostName(): string {
+    try {
+      return window.location.hostname.replace(/^www\./, '') || 'default';
+    } catch {
+      return 'default';
+    }
+  }
+
+  private async init(): Promise<void> {
+    console.log(`[Anime FrameGen] Active in frame: ${window.location.href}`);
+
+    // Load initial settings safely + per-domain VSR overrides
+    safeStorageGet(['frameGenSettings', 'showDebug', 'siteVsrOverrides'], (result) => {
+      if (result && result.frameGenSettings) {
+        this.settings = { ...this.settings, ...result.frameGenSettings };
+      }
+      if (result && result.showDebug !== undefined) {
+        this.showDebugHud = !!result.showDebug;
+      }
+      if (result && result.siteVsrOverrides) {
+        const host = this.getHostName();
+        if (result.siteVsrOverrides[host] !== undefined) {
+          this.vsrBypass = !!result.siteVsrOverrides[host];
+        }
+      }
+      this.startVideoObservation();
+    });
+
+    // Listen for settings and debug changes across all frames
+    if (isExtensionValid() && chrome.storage && chrome.storage.onChanged) {
+      try {
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+          if (areaName === 'local') {
+            if (changes.frameGenSettings) {
+              this.settings = { ...this.settings, ...changes.frameGenSettings.newValue };
+              if (this.scheduler) {
+                this.scheduler.updateOptions(this.settings);
+              }
+              if (!this.settings.enabled) {
+                this.disableFrameGen();
+              } else if (this.currentVideo) {
+                if (!this.scheduler) {
+                  this.attachToVideo(this.currentVideo);
+                } else {
+                  this.enableFrameGen();
+                }
+              }
+              this.updateSidePill();
+            }
+
+            if (changes.showDebug !== undefined) {
+              this.showDebugHud = !!changes.showDebug.newValue;
+              this.updateDebugHud();
+            }
+
+            if (changes.siteVsrOverrides) {
+              const overrides = changes.siteVsrOverrides.newValue || {};
+              const host = this.getHostName();
+              if (overrides[host] !== undefined && overrides[host] !== this.vsrBypass) {
+                this.vsrBypass = overrides[host];
+                const overlay = this.overlayManager.getActiveState();
+                if (this.vsrBypass) {
+                  if (overlay && overlay.canvas) {
+                    overlay.canvas.style.opacity = '0';
+                    overlay.canvas.style.visibility = 'hidden';
+                  }
+                  if (this.scheduler) this.scheduler.stop();
+                } else {
+                  if (overlay && overlay.canvas) {
+                    overlay.canvas.style.opacity = '1';
+                    overlay.canvas.style.visibility = 'visible';
+                  }
+                  if (this.scheduler && this.settings.enabled && this.currentVideo && !this.currentVideo.paused) {
+                    this.scheduler.start();
+                  }
+                }
+                this.updateSidePill();
+                this.updateDebugHud();
+              }
+            }
+          }
+        });
+      } catch {}
+    }
+
+    // Global capture of video events
+    const handleGlobalVideoEvent = (e: Event) => {
+      if (e.target instanceof HTMLVideoElement) {
+        const v = e.target;
+        const src = v.currentSrc || v.src || '';
+        if (src.includes('blank.mp4')) return;
+
+        // Ignore small preview/sidebar videos
+        const rect = v.getBoundingClientRect();
+        if (rect.width < 200 || rect.height < 140) return;
+
+        if (v !== this.currentVideo || !this.scheduler) {
+          this.attachToVideo(v);
+        }
+      }
+    };
+
+    window.addEventListener('play', handleGlobalVideoEvent, true);
+    window.addEventListener('playing', handleGlobalVideoEvent, true);
+    window.addEventListener('canplay', handleGlobalVideoEvent, true);
+    window.addEventListener('loadeddata', handleGlobalVideoEvent, true);
+    window.addEventListener('loadedmetadata', handleGlobalVideoEvent, true);
+    window.addEventListener('timeupdate', handleGlobalVideoEvent, true);
+
+    // Keyboard shortcut Shift + D for Diagnostic HUD
+    window.addEventListener('keydown', (e) => {
+      if (e.shiftKey && (e.key === 'D' || e.key === 'd' || e.code === 'KeyD')) {
+        const targetTag = (e.target as HTMLElement)?.tagName;
+        if (!['INPUT', 'TEXTAREA'].includes(targetTag)) {
+          e.preventDefault();
+          this.toggleDebugHud();
+        }
+      }
+    }, true);
+
+    // Direct message fallback
+    if (isExtensionValid() && chrome.runtime && chrome.runtime.onMessage) {
+      try {
+        chrome.runtime.onMessage.addListener(this.handleMessage);
+      } catch {}
+    }
+
+    // Handle tab visibility
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (this.scheduler) this.scheduler.stop();
+      } else {
+        if (this.scheduler && this.currentVideo && !this.currentVideo.paused && this.settings.enabled && !this.vsrBypass) {
+          this.scheduler.start();
+        }
+      }
+    });
+
+    // Start telemetry broadcaster & live FPS ticker
+    this.startTelemetryLoop();
+  }
+
+  private toggleDebugHud(): void {
+    this.showDebugHud = !this.showDebugHud;
+    safeStorageSet({ showDebug: this.showDebugHud });
+    this.updateDebugHud();
+  }
+
+  private toggleVsrBypass(): void {
+    this.vsrBypass = !this.vsrBypass;
+    const host = this.getHostName();
+
+    // Persist per-site setting in storage
+    safeStorageGet(['siteVsrOverrides'], (res) => {
+      const overrides = res?.siteVsrOverrides || {};
+      overrides[host] = this.vsrBypass;
+      safeStorageSet({ siteVsrOverrides: overrides });
+    });
+
+    const overlay = this.overlayManager.getActiveState();
+
+    if (this.vsrBypass) {
+      // Hide WebGPU overlay cleanly with opacity/visibility to keep canvas dimensions valid
+      if (overlay && overlay.canvas) {
+        overlay.canvas.style.opacity = '0';
+        overlay.canvas.style.visibility = 'hidden';
+      }
+      if (this.scheduler) {
+        this.scheduler.stop();
+      }
+    } else {
+      // Re-enable WebGPU overlay
+      if (overlay && overlay.canvas) {
+        overlay.canvas.style.opacity = '1';
+        overlay.canvas.style.visibility = 'visible';
+        if (this.gpuBundle) {
+          configureCanvas(
+            this.gpuBundle.device,
+            overlay.canvas,
+            this.gpuBundle.presentationFormat
+          );
+        }
+      }
+      if (this.scheduler && this.settings.enabled && this.currentVideo && !this.currentVideo.paused) {
+        this.scheduler.start();
+      }
+    }
+
+    this.updateSidePill();
+    this.updateDebugHud();
+  }
+
+  private startTelemetryLoop(): void {
+    window.setInterval(() => {
+      const isVisible = !document.hidden;
+      const isPlaying = this.currentVideo ? !this.currentVideo.paused && !this.currentVideo.ended : false;
+      const hasActiveScheduler = !!(this.scheduler && this.settings.enabled && !this.vsrBypass);
+      const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
+      const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
+
+      if (this.currentVideo && isVisible) {
+        const payload = {
+          hasVideo: true,
+          active: hasActiveScheduler && isPlaying,
+          vsrBypass: this.vsrBypass,
+          siteHost: this.getHostName(),
+          fps: liveFps,
+          sourceFps: sourceFps,
+          videoDimensions: {
+            width: this.currentVideo.videoWidth || 0,
+            height: this.currentVideo.videoHeight || 0
+          },
+          settings: this.settings,
+          timestamp: Date.now()
+        };
+        safeStorageSet({ activePlayerStatus: payload });
+      }
+
+      this.updateSidePill();
+      if (this.showDebugHud) {
+        this.updateDebugHud();
+      }
+    }, 500);
+  }
+
+  private startVideoObservation(): void {
+    this.findAndAttachVideo();
+
+    const observer = new MutationObserver(() => {
+      this.findAndAttachVideo();
+    });
+
+    observer.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true
+    });
+
+    window.setInterval(() => {
+      this.findAndAttachVideo();
+    }, 2000);
+  }
+
+  private findAndAttachVideo(): void {
+    // 1. If currently attached video is valid, in DOM and not ended, keep it (prevents flickering)
+    if (this.currentVideo && document.contains(this.currentVideo)) {
+      const rect = this.currentVideo.getBoundingClientRect();
+      if (rect.width > 200 && rect.height > 140) {
+        if (!this.currentVideo.paused || !this.hasOtherActivePlayingVideo()) {
+          return;
+        }
+      }
+    }
+
+    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    if (videos.length === 0) return;
+
+    // 2. YouTube specific: prefer .html5-main-video
+    const ytMain = document.querySelector('video.html5-main-video') as HTMLVideoElement | null;
+    if (ytMain && !ytMain.src?.includes('blank.mp4')) {
+      const rect = ytMain.getBoundingClientRect();
+      if (rect.width > 200 && rect.height > 140) {
+        if (this.currentVideo !== ytMain) {
+          this.attachToVideo(ytMain);
+        }
+        return;
+      }
+    }
+
+    // 3. Shorts specific: prefer active reel video
+    const activeShorts = document.querySelector('ytd-reel-video-renderer[is-active] video') as HTMLVideoElement | null;
+    if (activeShorts) {
+      if (this.currentVideo !== activeShorts) {
+        this.attachToVideo(activeShorts);
+      }
+      return;
+    }
+
+    // 4. General search: pick the largest playing video (ignoring sidebar previews)
+    let candidate: HTMLVideoElement | null = null;
+    let maxArea = 0;
+
+    for (const v of videos) {
+      const src = v.currentSrc || v.src || '';
+      if (src.includes('blank.mp4')) continue;
+
+      const rect = v.getBoundingClientRect();
+      if (rect.width < 200 || rect.height < 140) continue; // Ignore mini hover thumbnails/previews
+
+      const area = rect.width * rect.height;
+
+      if (!v.paused && !v.ended) {
+        if (area > maxArea) {
+          maxArea = area;
+          candidate = v;
+        }
+      } else if (!candidate && area > maxArea) {
+        maxArea = area;
+        candidate = v;
+      }
+    }
+
+    if (candidate && candidate !== this.currentVideo) {
+      this.attachToVideo(candidate);
+    }
+  }
+
+  private hasOtherActivePlayingVideo(): boolean {
+    const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+    for (const v of videos) {
+      if (v !== this.currentVideo && !v.paused && !v.ended) {
+        const rect = v.getBoundingClientRect();
+        if (rect.width > 300 && rect.height > 200) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private async ensureWebGPU(): Promise<boolean> {
+    if (!this.gpuBundle) {
+      this.gpuBundle = await initWebGPU();
+      if (!this.gpuBundle) return false;
+    }
+
+    if (!this.anime4kPass) {
+      this.anime4kPass = new Anime4KPass(
+        this.gpuBundle.device,
+        this.gpuBundle.presentationFormat
+      );
+    }
+
+    return true;
+  }
+
+  private async attachToVideo(video: HTMLVideoElement): Promise<void> {
+    if (this.isAttaching) return;
+    this.isAttaching = true;
+
+    try {
+      if (this.currentVideo === video && this.scheduler) {
+        return;
+      }
+
+      if (this.scheduler) {
+        this.scheduler.destroy();
+        this.scheduler = null;
+      }
+
+      this.currentVideo = video;
+      const overlay = this.overlayManager.attach(video);
+
+      const success = await this.ensureWebGPU();
+      if (!success || !this.gpuBundle || !this.anime4kPass) {
+        this.isAttaching = false;
+        return;
+      }
+
+      configureCanvas(
+        this.gpuBundle.device,
+        overlay.canvas,
+        this.gpuBundle.presentationFormat
+      );
+
+      const gpuContext = overlay.canvas.getContext('webgpu') as unknown as GPUCanvasContext;
+
+      this.scheduler = new FrameScheduler(
+        video,
+        overlay.canvas,
+        gpuContext,
+        this.gpuBundle.device,
+        this.anime4kPass,
+        this.settings
+      );
+
+      this.overlayManager.setOnResize(() => {
+        if (this.gpuBundle) {
+          configureCanvas(
+            this.gpuBundle.device,
+            overlay.canvas,
+            this.gpuBundle.presentationFormat
+          );
+        }
+      });
+
+      if (this.settings.enabled && !this.vsrBypass) {
+        this.scheduler.start();
+      }
+
+      this.createOrUpdateSidePill(overlay.wrapper);
+      this.updateSidePill();
+    } catch (err) {
+      console.warn('[Anime FrameGen] attachToVideo error:', err);
+    } finally {
+      this.isAttaching = false;
+    }
+  }
+
+  private enableFrameGen(): void {
+    if (this.scheduler && !this.vsrBypass) {
+      this.scheduler.start();
+    }
+  }
+
+  private disableFrameGen(): void {
+    if (this.scheduler) {
+      this.scheduler.stop();
+    }
+  }
+
+  private handleMessage = (
+    message: any,
+    _sender: chrome.runtime.MessageSender,
+    sendResponse: (response?: any) => void
+  ) => {
+    if (!message || !message.type) return;
+
+    if (message.type === 'UPDATE_SETTINGS') {
+      this.settings = { ...this.settings, ...message.settings };
+      if (this.scheduler) {
+        this.scheduler.updateOptions(this.settings);
+      }
+      if (!this.settings.enabled) {
+        this.disableFrameGen();
+      } else {
+        this.enableFrameGen();
+      }
+      this.updateSidePill();
+      sendResponse({ success: true });
+      return;
+    }
+
+    if (message.type === 'GET_STATUS') {
+      sendResponse({
+        hasVideo: !!this.currentVideo,
+        active: !!(this.scheduler && this.settings.enabled && !this.vsrBypass),
+        fps: this.scheduler ? this.scheduler.getFps() : 0,
+        sourceFps: this.scheduler ? this.scheduler.getSourceFps() : 24,
+        siteHost: this.getHostName(),
+        settings: this.settings
+      });
+      return;
+    }
+  };
+
+  // Ultra-Minimalist Left Edge Micro-Switch
+  private createOrUpdateSidePill(wrapper: HTMLElement): void {
+    if (!this.settings.showSideControls) {
+      if (this.sidePillElement && this.sidePillElement.parentElement) {
+        this.sidePillElement.parentElement.removeChild(this.sidePillElement);
+      }
+      this.sidePillElement = null;
+      return;
+    }
+
+    if (!this.sidePillElement) {
+      const container = document.createElement('div');
+      container.className = 'anime-framegen-side-container';
+      container.style.position = 'absolute';
+      container.style.left = '0';
+      container.style.top = '50%';
+      container.style.transform = 'translateY(-50%)';
+      container.style.zIndex = '2147483647';
+      container.style.pointerEvents = 'auto';
+      container.style.display = 'flex';
+      container.style.alignItems = 'center';
+
+      // Edge hover sensor (leftmost 24px strip)
+      const sensor = document.createElement('div');
+      sensor.style.position = 'absolute';
+      sensor.style.left = '0';
+      sensor.style.top = '-60px';
+      sensor.style.width = '24px';
+      sensor.style.height = '140px';
+      sensor.style.cursor = 'pointer';
+      sensor.style.zIndex = '2147483647';
+
+      // Micro-Pill Switch (20px height)
+      const pill = document.createElement('div');
+      pill.className = 'anime-framegen-micro-pill';
+      pill.style.display = 'inline-flex';
+      pill.style.alignItems = 'center';
+      pill.style.gap = '5px';
+      pill.style.padding = '2px 8px';
+      pill.style.height = '20px';
+      pill.style.background = 'rgba(13, 17, 23, 0.94)';
+      pill.style.backdropFilter = 'blur(6px)';
+      pill.style.border = '1px solid rgba(255, 255, 255, 0.18)';
+      pill.style.borderLeft = 'none';
+      pill.style.borderRadius = '0 10px 10px 0';
+      pill.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.7)';
+      pill.style.color = '#e2e8f0';
+      pill.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+      pill.style.fontSize = '10px';
+      pill.style.fontWeight = '500';
+      pill.style.cursor = 'pointer';
+      pill.style.userSelect = 'none';
+      pill.style.whiteSpace = 'nowrap';
+      pill.style.opacity = '0';
+      pill.style.pointerEvents = 'none';
+      pill.style.transform = 'translateX(-12px)';
+      pill.style.transition = 'transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, border-color 0.2s ease';
+      pill.title = 'Клик: Генератор 60 FPS ↔ Натив c VSR | Shift+D: Мониторинг';
+
+      pill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.toggleVsrBypass();
+      });
+
+      container.appendChild(sensor);
+      container.appendChild(pill);
+
+      // Smooth Edge Hover Logic
+      let hideTimer: number | null = null;
+      const showPill = () => {
+        if (hideTimer) clearTimeout(hideTimer);
+        pill.style.transform = 'translateX(0)';
+        pill.style.opacity = '1';
+        pill.style.pointerEvents = 'auto';
+      };
+      const hidePill = () => {
+        hideTimer = window.setTimeout(() => {
+          pill.style.transform = 'translateX(-12px)';
+          pill.style.opacity = '0';
+          pill.style.pointerEvents = 'none';
+        }, 700);
+      };
+
+      sensor.addEventListener('mouseenter', showPill);
+      pill.addEventListener('mouseenter', showPill);
+      container.addEventListener('mouseleave', hidePill);
+
+      // Global capture mousemove to ensure edge hover works on YouTube
+      const onGlobalMouseMove = (e: MouseEvent) => {
+        if (!this.settings.showSideControls || !this.currentVideo) return;
+        const rect = this.currentVideo.getBoundingClientRect();
+        if (
+          e.clientX >= rect.left &&
+          e.clientX <= rect.left + 28 &&
+          e.clientY >= rect.top + rect.height * 0.2 &&
+          e.clientY <= rect.bottom - rect.height * 0.2
+        ) {
+          showPill();
+        }
+      };
+      window.addEventListener('mousemove', onGlobalMouseMove, true);
+
+      this.sidePillElement = container;
+    }
+
+    this.updateSidePill();
+
+    if (!wrapper.contains(this.sidePillElement)) {
+      wrapper.appendChild(this.sidePillElement);
+    }
+  }
+
+  private updateSidePill(): void {
+    if (!this.settings.showSideControls) {
+      if (this.sidePillElement && this.sidePillElement.parentElement) {
+        this.sidePillElement.parentElement.removeChild(this.sidePillElement);
+      }
+      this.sidePillElement = null;
+      return;
+    }
+
+    if (!this.sidePillElement) return;
+
+    const pill = this.sidePillElement.querySelector('.anime-framegen-micro-pill') as HTMLElement;
+    if (!pill) return;
+
+    if (this.vsrBypass) {
+      // VSR Native State
+      pill.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+      pill.innerHTML = `
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
+        <span style="color: #4ade80;">VSR (Натив)</span>
+      `;
+    } else {
+      // Active FrameGen 60 FPS State
+      pill.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+      pill.innerHTML = `
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: #38bdf8; display: inline-block;"></span>
+        <span>60 FPS</span>
+      `;
+    }
+  }
+
+  private updateDebugHud(): void {
+    const overlay = this.overlayManager.getActiveState();
+    if (!overlay) return;
+
+    if (!this.showDebugHud) {
+      if (this.debugHudElement && this.debugHudElement.parentElement) {
+        this.debugHudElement.parentElement.removeChild(this.debugHudElement);
+      }
+      this.debugHudElement = null;
+      return;
+    }
+
+    if (!this.debugHudElement) {
+      this.debugHudElement = document.createElement('div');
+      this.debugHudElement.className = 'anime-framegen-hud';
+      this.debugHudElement.style.position = 'absolute';
+      this.debugHudElement.style.top = '12px';
+      this.debugHudElement.style.left = '12px';
+      this.debugHudElement.style.padding = '10px 14px';
+      this.debugHudElement.style.background = 'rgba(13, 17, 23, 0.94)';
+      this.debugHudElement.style.backdropFilter = 'blur(8px)';
+      this.debugHudElement.style.color = '#e2e8f0';
+      this.debugHudElement.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      this.debugHudElement.style.fontSize = '11px';
+      this.debugHudElement.style.borderRadius = '6px';
+      this.debugHudElement.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+      this.debugHudElement.style.zIndex = '2147483646';
+      this.debugHudElement.style.pointerEvents = 'auto';
+      this.debugHudElement.style.boxShadow = '0 6px 20px rgba(0, 0, 0, 0.7)';
+      this.debugHudElement.style.minWidth = '240px';
+      overlay.wrapper.appendChild(this.debugHudElement);
+    }
+
+    const vRes = this.currentVideo ? `${this.currentVideo.videoWidth}x${this.currentVideo.videoHeight}` : '--';
+    const outRes = overlay.canvas ? `${overlay.canvas.width}x${overlay.canvas.height}` : '--';
+    const vStatus = this.currentVideo ? (this.currentVideo.paused ? 'Пауза' : 'Воспроизведение') : '--';
+    
+    const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
+    const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
+
+    let fpsText = '';
+    if (this.currentVideo?.paused) {
+      fpsText = '<span style="color:#94a3b8;">0 FPS (Пауза)</span>';
+    } else if (this.vsrBypass) {
+      fpsText = `<span style="color:#4ade80;">${sourceFps} FPS (VSR Исходник)</span>`;
+    } else if (this.settings.enabled) {
+      fpsText = `<span style="color:#38bdf8;font-weight:700;">${sourceFps} FPS → ${liveFps || 60} FPS</span>`;
+    } else {
+      fpsText = `<span style="color:#94a3b8;">${sourceFps} FPS (Нативный)</span>`;
+    }
+
+    const mode = this.settings.anime4kParams?.scalerMode || 'anime4k';
+    let modeName = 'Anime4K v4.0';
+    if (mode === 'fsr') modeName = 'AMD FSR';
+    else if (mode === 'bicubic') modeName = 'Bicubic Catmull-Rom';
+    else if (mode === 'off') modeName = 'Выкл (1:1)';
+
+    const strengthPct = Math.round((this.settings.anime4kParams?.strength ?? 0.8) * 100);
+    const scaleLabel = this.vsrBypass
+      ? '<span style="color:#4ade80;">Нативный вывод (VSR)</span>'
+      : ((mode === 'off' || strengthPct === 0)
+          ? '<span style="color:#94a3b8;">Выкл</span>'
+          : `<span style="color:#38bdf8;">${modeName} (${strengthPct}%)</span>`);
+
+    this.debugHudElement.innerHTML = `
+      <div style="font-weight:600;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:4px;color:#f8fafc;display:flex;justify-content:space-between;">
+        <span>Мониторинг видео</span>
+        ${fpsText}
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Масштаб:</span>${scaleLabel}</div>
+      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Видеопоток:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
+      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Вывод экрана:</span><span style="color:#f1f5f9;">${outRes}</span></div>
+      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">Shift+D — скрыть</div>
+    `;
+  }
+}
+
+// Instantiate controller in content script
+new ContentController();

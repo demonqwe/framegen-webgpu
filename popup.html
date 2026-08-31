@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Frame Generator</title>
+  <link rel="stylesheet" href="./src/popup/popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="brand">
+        <span class="brand-title">FrameGen Control</span>
+        <span class="brand-sub">RTX Video Upscaler & 60 FPS</span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="masterToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </header>
+
+    <!-- Scaler Selector -->
+    <div class="section-title">Алгоритм масштабирования</div>
+    <div class="segmented-control">
+      <button type="button" class="seg-btn active" data-mode="anime4k">Anime4K</button>
+      <button type="button" class="seg-btn" data-mode="fsr">AMD FSR</button>
+      <button type="button" class="seg-btn" data-mode="bicubic">Bicubic</button>
+      <button type="button" class="seg-btn" data-mode="off">Выкл</button>
+    </div>
+
+    <!-- Status Panel -->
+    <div class="panel">
+      <div class="panel-row">
+        <span class="dim">Частота кадров</span>
+        <span class="val highlight" id="fpsCounter">-- FPS</span>
+      </div>
+      <div class="panel-row">
+        <span class="dim">Разрешение</span>
+        <span class="val" id="videoRes">--</span>
+      </div>
+      <div class="panel-row">
+        <span class="dim">Статус плеера</span>
+        <span class="val" id="statusText">Поиск плеера...</span>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="panel">
+      <div class="control-row">
+        <label for="fpsMode" class="dim">Генерация кадров</label>
+        <select id="fpsMode" class="select-box">
+          <option value="60fps">Целевая: 60 FPS (Авто 24→60)</option>
+          <option value="120fps">Высокая: 120 FPS (Для 120Hz+)</option>
+          <option value="native">Нативная частота (Без генерации)</option>
+        </select>
+      </div>
+
+      <div class="control-row-col">
+        <div class="label-val-row">
+          <span class="dim">Резкость и чёткость</span>
+          <span class="val-num" id="strengthValue">80%</span>
+        </div>
+        <input type="range" id="anime4kStrength" min="0" max="1.5" step="0.05" value="0.8" class="range-input">
+      </div>
+
+      <div class="checkbox-row">
+        <label class="check-label">
+          <input type="checkbox" id="autoDisableWhenNativeOrHigher" checked>
+          <span>Пропускать апскейл при нативном качестве экрана (≥1440p)</span>
+        </label>
+      </div>
+
+      <div class="checkbox-row">
+        <label class="check-label">
+          <input type="checkbox" id="showSideControls" checked>
+          <span>Отображать боковой переключатель (60 FPS ↔ VSR)</span>
+        </label>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <span>Нажмите Shift+D во время видео для мониторинга</span>
+    </footer>
+  </div>
+
+  <script type="module" src="./src/popup/popup.ts"></script>
+</body>
+</html>
