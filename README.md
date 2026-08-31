@@ -1,4 +1,4 @@
-# ⚡ Anime FrameGen & Video Scaler (WebGPU)
+# ⚡ FrameGen & Video Scaler (WebGPU)
 
 [![WebGPU](https://img.shields.io/badge/WebGPU-Hardware_Accelerated-38bdf8?style=flat-square&logo=webgpu)](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API)
 [![Manifest V3](https://img.shields.io/badge/Chrome_Extension-Manifest_V3-34d399?style=flat-square&logo=googlechrome)](https://developer.chrome.com/docs/extensions/mv3/intro/)
