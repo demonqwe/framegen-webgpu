@@ -517,33 +517,33 @@ class ContentController {
       container.style.display = 'flex';
       container.style.alignItems = 'center';
 
-      // Compact edge hover sensor (Height 70px, Width 18px centered at 50% line)
+      // Compact edge hover sensor (Height 50px, Width 16px centered at 50% line)
       const sensor = document.createElement('div');
       sensor.style.position = 'absolute';
       sensor.style.left = '0';
-      sensor.style.top = '-35px';
-      sensor.style.width = '18px';
-      sensor.style.height = '70px';
+      sensor.style.top = '-25px';
+      sensor.style.width = '16px';
+      sensor.style.height = '50px';
       sensor.style.cursor = 'pointer';
       sensor.style.zIndex = '2147483647';
 
-      // Micro-Pill Switch with enlarged comfortable hit area (24px height)
+      // Compact Micro-Pill Switch (20px height)
       const pill = document.createElement('div');
       pill.className = 'framegen-micro-pill';
       pill.style.display = 'inline-flex';
       pill.style.alignItems = 'center';
-      pill.style.gap = '6px';
-      pill.style.padding = '4px 10px';
-      pill.style.height = '24px';
+      pill.style.gap = '5px';
+      pill.style.padding = '2px 7px';
+      pill.style.height = '20px';
       pill.style.background = 'rgba(13, 17, 23, 0.95)';
       pill.style.backdropFilter = 'blur(8px)';
       pill.style.border = '1px solid rgba(255, 255, 255, 0.22)';
       pill.style.borderLeft = 'none';
-      pill.style.borderRadius = '0 12px 12px 0';
+      pill.style.borderRadius = '0 10px 10px 0';
       pill.style.boxShadow = '0 3px 10px rgba(0, 0, 0, 0.75)';
       pill.style.color = '#f1f5f9';
       pill.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-      pill.style.fontSize = '11px';
+      pill.style.fontSize = '10px';
       pill.style.fontWeight = '600';
       pill.style.cursor = 'pointer';
       pill.style.userSelect = 'none';
@@ -552,7 +552,7 @@ class ContentController {
       pill.style.pointerEvents = 'none';
       pill.style.transform = 'translateX(-12px)';
       pill.style.transition = 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease, border-color 0.18s ease';
-      pill.title = 'FrameGen WebGPU Quick Toggle';
+      pill.title = 'FrameGen WebGPU Toggle (ON / OFF)';
 
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -588,7 +588,7 @@ class ContentController {
         this.pillFadeTimeout = window.setTimeout(hidePill, 600);
       });
 
-      // Global capture mousemove: strictly triggered within +/- 35px vertically from center
+      // Global capture mousemove: strictly triggered within +/- 25px vertically from center
       const onGlobalMouseMove = (e: MouseEvent) => {
         if (!this.settings.showSideControls || !this.currentVideo) return;
         const rect = this.currentVideo.getBoundingClientRect();
@@ -606,12 +606,12 @@ class ContentController {
 
         const centerY = rect.top + rect.height * 0.5;
 
-        // Compact zone near left edge (within 20px) and near center (+- 35px)
+        // Compact zone near left edge (within 16px) and near center (+- 25px)
         if (
           e.clientX >= rect.left &&
-          e.clientX <= rect.left + 20 &&
-          e.clientY >= centerY - 35 &&
-          e.clientY <= centerY + 35
+          e.clientX <= rect.left + 16 &&
+          e.clientY >= centerY - 25 &&
+          e.clientY <= centerY + 25
         ) {
           showPill();
         }
@@ -643,27 +643,20 @@ class ContentController {
     if (!pill) return;
 
     const isGenOn = this.settings.isEnabled && !this.vsrBypass;
-    const t = getTranslation(this.settings.language);
 
     if (isGenOn) {
-      // Active FrameGen State
-      let fpsText = 'x2';
-      if (this.settings.multiplierMode === 'target_fps') {
-        fpsText = `${this.settings.targetFps} FPS`;
-      } else {
-        fpsText = `x${this.settings.multiplier}`;
-      }
+      // Active FrameGen State: Clean ON
       pill.style.borderColor = 'rgba(56, 189, 248, 0.5)';
       pill.innerHTML = `
-        <span style="width: 6px; height: 6px; border-radius: 50%; background: #38bdf8; display: inline-block;"></span>
-        <span>${t.sideOn} [${fpsText}]</span>
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: #38bdf8; display: inline-block;"></span>
+        <span>ON</span>
       `;
     } else {
-      // VSR / Native OFF State
+      // Native OFF State: Clean OFF
       pill.style.borderColor = 'rgba(34, 197, 94, 0.5)';
       pill.innerHTML = `
-        <span style="width: 6px; height: 6px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
-        <span style="color: #4ade80;">${t.sideOff}</span>
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
+        <span style="color: #4ade80;">OFF</span>
       `;
     }
   }

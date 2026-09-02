@@ -213,6 +213,11 @@ input:checked + .slider:before {
   font-size: 11px;
 }
 
+.control-row .dim {
+  flex-shrink: 0;
+  max-width: 120px;
+}
+
 .select-box {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -222,6 +227,8 @@ input:checked + .slider:before {
   font-size: 11px;
   outline: none;
   cursor: pointer;
+  max-width: 175px;
+  text-overflow: ellipsis;
 }
 
 .select-box:focus {
