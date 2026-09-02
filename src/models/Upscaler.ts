@@ -110,7 +110,7 @@ export class UpscalerManager {
   }
 
   /**
-   * Runs actual ONNX model inference on WebGPU if loaded, otherwise falls back to Anime4K WGSL pass.
+   * Runs actual ONNX model inference on WebGPU with fallback to WGSL pass.
    */
   public async renderWithOnnx(
     srcTexture: GPUTexture,
@@ -123,7 +123,6 @@ export class UpscalerManager {
   ): Promise<boolean> {
     const activeSession = (this.currentMode === 'span' ? this.spanSession : (targetWidth > 2560 ? this.compact4kSession : this.compactSession));
     if (!activeSession) {
-      // Fallback to WGSL
       this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness);
       return false;
     }
@@ -144,12 +143,15 @@ export class UpscalerManager {
       this.converter.convertTextureToNCHW(srcTexture, this.inputBuffer, paddedIn);
 
       // 2. Wrap buffer as ONNX Tensor with WebGPU location
-      const inputTensor = (ort.Tensor as any).fromGpuBuffer
-        ? (ort.Tensor as any).fromGpuBuffer(this.inputBuffer, {
+      let inputTensor: ort.Tensor | null = null;
+      if ((ort.Tensor as any).fromGpuBuffer) {
+        try {
+          inputTensor = (ort.Tensor as any).fromGpuBuffer(this.inputBuffer, {
             dataType: 'float32',
             dims: [1, 3, paddedIn.paddedHeight, paddedIn.paddedWidth]
-          })
-        : null;
+          });
+        } catch {}
+      }
 
       if (inputTensor) {
         const feeds: Record<string, ort.Tensor> = {};
@@ -159,7 +161,16 @@ export class UpscalerManager {
 
         // 3. NCHW GPU Buffer -> Output Texture
         if (outputTensor) {
-          this.converter.convertNCHWToTexture(this.outputBuffer, this.outputTexture, paddedOut);
+          if ((outputTensor as any).location === 'gpu-buffer' && (outputTensor as any).gpuBuffer) {
+            this.converter.convertNCHWToTexture((outputTensor as any).gpuBuffer, this.outputTexture, paddedOut);
+          } else if (outputTensor.data) {
+            const rawData = outputTensor.data as Float32Array;
+            this.device.queue.writeBuffer(this.outputBuffer, 0, rawData.buffer, rawData.byteOffset, rawData.byteLength);
+            this.converter.convertNCHWToTexture(this.outputBuffer, this.outputTexture, paddedOut);
+          } else {
+            this.converter.convertNCHWToTexture(this.outputBuffer, this.outputTexture, paddedOut);
+          }
+
           this.anime4kPass.render(this.outputTexture, outputTargetView, dstW, dstH, {
             strength: sharpness,
             thinningThreshold: 0.05,
@@ -169,7 +180,7 @@ export class UpscalerManager {
         }
       }
     } catch (e) {
-      console.warn('[FrameGen] ONNX inference execution fallback:', e);
+      console.warn('[FrameGen] ONNX inference fallback:', e);
     }
 
     // Fallback pass
