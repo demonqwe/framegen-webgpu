@@ -3,6 +3,7 @@ import { OverlayManager } from './overlay-manager';
 import { FrameScheduler } from './frame-scheduler';
 import { PipelineManager } from '../core/PipelineManager';
 import { ExtensionSettings, DEFAULT_SETTINGS } from '../config/defaults';
+import { getTranslation } from '../i18n/translations';
 
 function isExtensionValid(): boolean {
   try {
@@ -494,7 +495,7 @@ class ContentController {
     }
   };
 
-  // Ultra-Minimalist Left Edge Micro-Switch with explicit ON/OFF tags and bounds check
+  // Compact Left Edge Micro-Switch with enlarged hit target & center-focused hover area
   private createOrUpdateSidePill(wrapper: HTMLElement): void {
     if (!this.settings.showSideControls) {
       if (this.sidePillElement && this.sidePillElement.parentElement) {
@@ -516,42 +517,42 @@ class ContentController {
       container.style.display = 'flex';
       container.style.alignItems = 'center';
 
-      // Edge hover sensor
+      // Compact edge hover sensor (Height 70px, Width 18px centered at 50% line)
       const sensor = document.createElement('div');
       sensor.style.position = 'absolute';
       sensor.style.left = '0';
-      sensor.style.top = '-60px';
-      sensor.style.width = '24px';
-      sensor.style.height = '140px';
+      sensor.style.top = '-35px';
+      sensor.style.width = '18px';
+      sensor.style.height = '70px';
       sensor.style.cursor = 'pointer';
       sensor.style.zIndex = '2147483647';
 
-      // Micro-Pill Switch (20px height)
+      // Micro-Pill Switch with enlarged comfortable hit area (24px height)
       const pill = document.createElement('div');
       pill.className = 'framegen-micro-pill';
       pill.style.display = 'inline-flex';
       pill.style.alignItems = 'center';
-      pill.style.gap = '5px';
-      pill.style.padding = '2px 8px';
-      pill.style.height = '20px';
-      pill.style.background = 'rgba(13, 17, 23, 0.94)';
-      pill.style.backdropFilter = 'blur(6px)';
-      pill.style.border = '1px solid rgba(255, 255, 255, 0.18)';
+      pill.style.gap = '6px';
+      pill.style.padding = '4px 10px';
+      pill.style.height = '24px';
+      pill.style.background = 'rgba(13, 17, 23, 0.95)';
+      pill.style.backdropFilter = 'blur(8px)';
+      pill.style.border = '1px solid rgba(255, 255, 255, 0.22)';
       pill.style.borderLeft = 'none';
-      pill.style.borderRadius = '0 10px 10px 0';
-      pill.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.7)';
-      pill.style.color = '#e2e8f0';
-      pill.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
-      pill.style.fontSize = '10px';
-      pill.style.fontWeight = '500';
+      pill.style.borderRadius = '0 12px 12px 0';
+      pill.style.boxShadow = '0 3px 10px rgba(0, 0, 0, 0.75)';
+      pill.style.color = '#f1f5f9';
+      pill.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      pill.style.fontSize = '11px';
+      pill.style.fontWeight = '600';
       pill.style.cursor = 'pointer';
       pill.style.userSelect = 'none';
       pill.style.whiteSpace = 'nowrap';
       pill.style.opacity = '0';
       pill.style.pointerEvents = 'none';
       pill.style.transform = 'translateX(-12px)';
-      pill.style.transition = 'transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, border-color 0.2s ease';
-      pill.title = 'Клик: Генератор (ON) ↔ Натив c VSR (OFF) | Shift+D: Мониторинг';
+      pill.style.transition = 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease, border-color 0.18s ease';
+      pill.title = 'FrameGen WebGPU Quick Toggle';
 
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -587,7 +588,7 @@ class ContentController {
         this.pillFadeTimeout = window.setTimeout(hidePill, 600);
       });
 
-      // Global capture mousemove with strict bounds check
+      // Global capture mousemove: strictly triggered within +/- 35px vertically from center
       const onGlobalMouseMove = (e: MouseEvent) => {
         if (!this.settings.showSideControls || !this.currentVideo) return;
         const rect = this.currentVideo.getBoundingClientRect();
@@ -603,12 +604,14 @@ class ContentController {
           return;
         }
 
-        // Trigger near left edge (within 28px)
+        const centerY = rect.top + rect.height * 0.5;
+
+        // Compact zone near left edge (within 20px) and near center (+- 35px)
         if (
           e.clientX >= rect.left &&
-          e.clientX <= rect.left + 28 &&
-          e.clientY >= rect.top + rect.height * 0.2 &&
-          e.clientY <= rect.bottom - rect.height * 0.2
+          e.clientX <= rect.left + 20 &&
+          e.clientY >= centerY - 35 &&
+          e.clientY <= centerY + 35
         ) {
           showPill();
         }
@@ -640,21 +643,27 @@ class ContentController {
     if (!pill) return;
 
     const isGenOn = this.settings.isEnabled && !this.vsrBypass;
+    const t = getTranslation(this.settings.language);
 
     if (isGenOn) {
       // Active FrameGen State
-      const fpsText = this.settings.multiplier === 4 ? '120 FPS' : (this.settings.multiplier === 3 ? '90 FPS' : '60 FPS');
-      pill.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+      let fpsText = 'x2';
+      if (this.settings.multiplierMode === 'target_fps') {
+        fpsText = `${this.settings.targetFps} FPS`;
+      } else {
+        fpsText = `x${this.settings.multiplier}`;
+      }
+      pill.style.borderColor = 'rgba(56, 189, 248, 0.5)';
       pill.innerHTML = `
-        <span style="width: 5px; height: 5px; border-radius: 50%; background: #38bdf8; display: inline-block;"></span>
-        <span>ON [${fpsText}]</span>
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: #38bdf8; display: inline-block;"></span>
+        <span>${t.sideOn} [${fpsText}]</span>
       `;
     } else {
       // VSR / Native OFF State
-      pill.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+      pill.style.borderColor = 'rgba(34, 197, 94, 0.5)';
       pill.innerHTML = `
-        <span style="width: 5px; height: 5px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
-        <span style="color: #4ade80;">OFF [VSR Натив]</span>
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
+        <span style="color: #4ade80;">${t.sideOff}</span>
       `;
     }
   }
@@ -692,44 +701,76 @@ class ContentController {
       overlay.wrapper.appendChild(this.debugHudElement);
     }
 
+    const t = getTranslation(this.settings.language);
     const vRes = this.currentVideo ? `${this.currentVideo.videoWidth}x${this.currentVideo.videoHeight}` : '--';
     const outRes = overlay.canvas ? `${overlay.canvas.width}x${overlay.canvas.height}` : '--';
-    const vStatus = this.currentVideo ? (this.currentVideo.paused ? 'Пауза' : 'Воспроизведение') : '--';
+    const vStatus = this.currentVideo ? (this.currentVideo.paused ? t.paused : t.playing) : '--';
     
     const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
     const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
+    const latency = this.scheduler ? this.scheduler.getLatencyMs() : 0;
 
     let fpsText = '';
     if (this.currentVideo?.paused) {
-      fpsText = '<span style="color:#94a3b8;">0 FPS (Пауза)</span>';
+      fpsText = `<span style="color:#94a3b8;">0 FPS (${t.paused})</span>`;
     } else if (this.vsrBypass) {
-      fpsText = `<span style="color:#4ade80;">${sourceFps} FPS (VSR Исходник)</span>`;
+      fpsText = `<span style="color:#4ade80;">${sourceFps} FPS (${t.nativeVsr})</span>`;
     } else if (this.settings.isEnabled) {
       fpsText = `<span style="color:#38bdf8;font-weight:700;">${sourceFps} FPS → ${liveFps || 60} FPS</span>`;
     } else {
-      fpsText = `<span style="color:#94a3b8;">${sourceFps} FPS (Нативный)</span>`;
+      fpsText = `<span style="color:#94a3b8;">${sourceFps} FPS (${t.nativeFps})</span>`;
     }
+
+    const isOnnx = this.pipelineManager ? this.pipelineManager.isOnnxActive() : false;
+    const engineTag = isOnnx ? `<span style="color:#38bdf8;font-weight:600;">[${t.hudEngineOnnx}]</span>` : `<span style="color:#94a3b8;">[${t.hudEngineWgsl}]</span>`;
 
     let upscalerText = 'AMD FSR 1.0';
     switch (this.settings.scalerAlgorithm) {
-      case 'anime4k': upscalerText = 'Anime4K v4.0 (Line Thinning)'; break;
-      case 'span': upscalerText = 'SPAN x2 (FP16)'; break;
-      case 'compact': upscalerText = 'Real-ESRGAN Compact x2'; break;
+      case 'anime4k': upscalerText = 'Anime4K v4.0'; break;
+      case 'span': upscalerText = `SPAN x2 ${engineTag}`; break;
+      case 'compact': upscalerText = `Real-ESRGAN Compact ${engineTag}`; break;
       case 'bicubic': upscalerText = 'Bicubic Catmull-Rom'; break;
-      case 'off': upscalerText = 'Выкл (1:1)'; break;
+      case 'off': upscalerText = '1:1 Direct'; break;
       case 'fsr': default: upscalerText = 'AMD FSR 1.0 (EASU+RCAS)'; break;
+    }
+
+    let rowsHtml = '';
+
+    // Mode-adaptive display
+    if (this.settings.mode === 'generator_only') {
+      const modeInfo = this.settings.multiplierMode === 'target_fps' ? `Target ${this.settings.targetFps} FPS` : `x${this.settings.multiplier}`;
+      rowsHtml += `
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudMode}:</span><span style="color:#38bdf8;">${t.modeGenOnly} (${modeInfo})</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudLatency}:</span><span style="color:#38bdf8;">${latency} ms</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudVideoSource}:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
+      `;
+    } else if (this.settings.mode === 'upscale_only') {
+      rowsHtml += `
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudMode}:</span><span style="color:#38bdf8;">${t.modeUpscaleOnly}</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudUpscaler}:</span><span style="color:#f1f5f9;">${upscalerText}</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudLatency}:</span><span style="color:#38bdf8;">${latency} ms</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudVideoSource}:</span><span style="color:#f1f5f9;">${vRes}</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudScreenOutput}:</span><span style="color:#f1f5f9;">${outRes}</span></div>
+      `;
+    } else {
+      // Hybrid
+      const modeInfo = this.settings.multiplierMode === 'target_fps' ? `Target ${this.settings.targetFps} FPS` : `x${this.settings.multiplier}`;
+      rowsHtml += `
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudMode}:</span><span style="color:#38bdf8;">${t.modeHybrid} (${modeInfo})</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudUpscaler}:</span><span style="color:#f1f5f9;">${upscalerText}</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudLatency}:</span><span style="color:#38bdf8;">${latency} ms</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudVideoSource}:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudScreenOutput}:</span><span style="color:#f1f5f9;">${outRes}</span></div>
+      `;
     }
 
     this.debugHudElement.innerHTML = `
       <div style="font-weight:600;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:4px;color:#f8fafc;display:flex;justify-content:space-between;">
-        <span>Мониторинг WebGPU</span>
+        <span>${t.hudTitle}</span>
         ${fpsText}
       </div>
-      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Режим:</span><span style="color:#38bdf8;">${this.settings.mode} (${this.settings.multiplier}×)</span></div>
-      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Апскейлер:</span><span style="color:#f1f5f9;">${upscalerText}</span></div>
-      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Видеопоток:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
-      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Вывод экрана:</span><span style="color:#f1f5f9;">${outRes}</span></div>
-      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">Shift+D — скрыть</div>
+      ${rowsHtml}
+      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">${t.hudHideHint}</div>
     `;
   }
 }

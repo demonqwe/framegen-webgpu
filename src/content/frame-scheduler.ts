@@ -261,7 +261,10 @@ export class FrameScheduler {
     }
   }
 
+  private renderLatencyMs = 0;
+
   private async renderFrame(texture: GPUTexture, srcWidth: number, srcHeight: number): Promise<void> {
+    const t0 = performance.now();
     try {
       const currentTarget = this.gpuContext.getCurrentTexture();
       const targetView = currentTarget.createView();
@@ -283,6 +286,10 @@ export class FrameScheduler {
 
       this.device.queue.submit([commandEncoder.finish()]);
 
+      const t1 = performance.now();
+      const frameCost = t1 - t0;
+      this.renderLatencyMs = Math.round((this.renderLatencyMs * 0.8 + frameCost * 0.2) * 10) / 10;
+
       this.frameCount++;
       const now = performance.now();
       const elapsed = now - this.lastFpsUpdate;
@@ -302,6 +309,10 @@ export class FrameScheduler {
 
   public getSourceFps(): number {
     return this.sourceFps;
+  }
+
+  public getLatencyMs(): number {
+    return this.video.paused ? 0 : this.renderLatencyMs;
   }
 
   public destroy(): void {

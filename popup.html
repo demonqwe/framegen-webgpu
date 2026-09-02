@@ -10,8 +10,15 @@
   <div class="container">
     <header class="header">
       <div class="brand">
-        <span class="brand-title">FrameGen WebGPU</span>
-        <span class="brand-sub">60-240 FPS & 1440p Scaler</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="brand-title" id="t_brandTitle">FrameGen WebGPU</span>
+          <div class="lang-switch" style="display: flex; gap: 3px; background: rgba(255,255,255,0.08); padding: 2px 5px; border-radius: 4px; font-size: 10px;">
+            <span id="langRu" style="cursor: pointer; font-weight: 700; color: #38bdf8;">RU</span>
+            <span style="color: #64748b;">|</span>
+            <span id="langEn" style="cursor: pointer; color: #94a3b8;">EN</span>
+          </div>
+        </div>
+        <span class="brand-sub" id="t_brandSub">60-240 FPS & 1440p/4K Scaler</span>
       </div>
       <label class="switch">
         <input type="checkbox" id="masterToggle">
@@ -22,51 +29,60 @@
     <!-- Status Panel -->
     <div class="panel">
       <div class="panel-row">
-        <span class="dim">Частота кадров</span>
+        <span class="dim" id="t_fpsCounterLabel">Частота кадров</span>
         <span class="val highlight" id="fpsCounter">-- FPS</span>
       </div>
       <div class="panel-row">
-        <span class="dim">Разрешение</span>
+        <span class="dim" id="t_resolutionLabel">Разрешение</span>
         <span class="val" id="videoRes">--</span>
       </div>
       <div class="panel-row">
-        <span class="dim">Статус плеера</span>
+        <span class="dim" id="t_playerStatusLabel">Статус плеера</span>
         <span class="val" id="statusText">Поиск плеера...</span>
       </div>
     </div>
 
     <!-- Mode Selector -->
-    <div class="section-title">Режим работы</div>
+    <div class="section-title" id="t_modeTitle">Режим работы</div>
     <div class="segmented-control">
-      <button type="button" class="seg-btn active" data-mode="hybrid">Гибридный</button>
-      <button type="button" class="seg-btn" data-mode="generator_only">Кадры</button>
-      <button type="button" class="seg-btn" data-mode="upscale_only">Апскейл</button>
+      <button type="button" class="seg-btn active" data-mode="hybrid" id="t_modeHybrid">Гибридный</button>
+      <button type="button" class="seg-btn" data-mode="generator_only" id="t_modeGenOnly">Кадры</button>
+      <button type="button" class="seg-btn" data-mode="upscale_only" id="t_modeUpscaleOnly">Апскейл</button>
     </div>
 
     <!-- Controls -->
     <div class="panel">
       <div class="control-row">
-        <label for="scalerSelect" class="dim">Алгоритм апскейла</label>
+        <label for="scalerSelect" class="dim" id="t_scalerLabel">Алгоритм апскейла</label>
         <select id="scalerSelect" class="select-box">
           <option value="fsr">AMD FSR 1.0 (EASU + RCAS)</option>
           <option value="anime4k">Anime4K v4.0 (Line Thinning)</option>
-          <option value="span">SPAN x2 (Субпиксельный)</option>
-          <option value="compact">Real-ESRGAN Compact x2 (Деблок)</option>
+          <option value="span">SPAN x2 (FP16 ONNX)</option>
+          <option value="compact">Real-ESRGAN Compact (FP16 ONNX)</option>
           <option value="bicubic">Bicubic Catmull-Rom (16-Tap)</option>
-          <option value="off">Выкл (1:1 без масштабирования)</option>
+          <option value="off">1:1 Direct (Выкл)</option>
         </select>
       </div>
 
       <div class="control-row">
-        <label for="multiplierModeSelect" class="dim">Тип частоты</label>
+        <label for="targetResSelect" class="dim" id="t_targetResLabel">Целевое разрешение</label>
+        <select id="targetResSelect" class="select-box">
+          <option value="1440p">1440p (2560×1440)</option>
+          <option value="4k">4K UHD (3840×2160)</option>
+          <option value="auto">Авто (Размер экрана)</option>
+        </select>
+      </div>
+
+      <div class="control-row">
+        <label for="multiplierModeSelect" class="dim" id="t_frequencyTypeLabel">Тип частоты</label>
         <select id="multiplierModeSelect" class="select-box">
-          <option value="fixed">Фиксированный множитель</option>
-          <option value="target_fps">Плавающий множитель (Целевой FPS)</option>
+          <option value="fixed" id="t_fixedMultiplier">Фиксированный множитель</option>
+          <option value="target_fps" id="t_floatingMultiplier">Плавающий (Целевой FPS)</option>
         </select>
       </div>
 
       <div class="control-row" id="fixedMultiplierRow">
-        <label for="multiplierSelect" class="dim">Множитель</label>
+        <label for="multiplierSelect" class="dim" id="t_multiplierLabel">Множитель</label>
         <select id="multiplierSelect" class="select-box">
           <option value="2">x2</option>
           <option value="3">x3</option>
@@ -75,7 +91,7 @@
       </div>
 
       <div class="control-row" id="targetFpsRow" style="display: none;">
-        <label for="targetFpsSelect" class="dim">Целевой FPS</label>
+        <label for="targetFpsSelect" class="dim" id="t_targetFpsLabel">Целевой FPS</label>
         <select id="targetFpsSelect" class="select-box">
           <option value="60">60 FPS</option>
           <option value="75">75 FPS</option>
@@ -88,16 +104,16 @@
       </div>
 
       <div class="control-row">
-        <label for="autoBypassFpsInput" class="dim">Авто-пропуск от (FPS)</label>
+        <label for="autoBypassFpsInput" class="dim" id="t_autoBypassLabel">Авто-пропуск от (FPS)</label>
         <div style="display: flex; align-items: center; gap: 6px;">
           <input type="number" id="autoBypassFpsInput" min="0" max="240" step="1" value="60" class="select-box" style="width: 70px; text-align: center; padding: 4px 6px;">
-          <span style="font-size: 10px; color: #64748b;">FPS (0=Выкл)</span>
+          <span style="font-size: 10px; color: #64748b;" id="t_autoBypassHint">FPS (0=Выкл)</span>
         </div>
       </div>
 
       <div class="control-row-col">
         <div class="label-val-row">
-          <span class="dim">Резкость и шарпенинг</span>
+          <span class="dim" id="t_sharpnessLabel">Резкость и шарпенинг</span>
           <span class="val-num" id="sharpnessValue">80%</span>
         </div>
         <input type="range" id="fsrSharpness" min="0" max="1.0" step="0.05" value="0.8" class="range-input">
@@ -106,20 +122,31 @@
       <div class="checkbox-row">
         <label class="check-label">
           <input type="checkbox" id="animeCadenceDetection" checked>
-          <span>Умный каденс аниме (пропуск дубликатов)</span>
+          <span id="t_animeCadenceLabel">Умный каденс аниме (пропуск дубликатов)</span>
         </label>
       </div>
 
       <div class="checkbox-row">
         <label class="check-label">
           <input type="checkbox" id="showSideControls" checked>
-          <span>Отображать боковой переключатель слева</span>
+          <span id="t_sideControlsLabel">Отображать переключатель слева</span>
         </label>
       </div>
     </div>
 
+    <!-- GitHub Update Section -->
+    <div class="panel" style="padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <span style="color: #94a3b8;">GitHub:</span>
+        <span id="updateStatusText" style="color: #38bdf8;">v1.0.6</span>
+      </div>
+      <button type="button" id="checkUpdatesBtn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 4px; padding: 3px 8px; font-size: 10px; cursor: pointer;">
+        Проверить обновления
+      </button>
+    </div>
+
     <footer class="footer">
-      <span>Нажмите Shift+D во время видео для мониторинга</span>
+      <span id="t_footerHint">Нажмите Shift+D во время видео для мониторинга</span>
     </footer>
   </div>
 

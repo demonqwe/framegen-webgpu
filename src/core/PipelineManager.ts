@@ -87,14 +87,42 @@ export class PipelineManager {
     }
     if (settings.scalerAlgorithm !== undefined) {
       this.upscalerManager.setMode(settings.scalerAlgorithm);
+      if (settings.scalerAlgorithm === 'span' || settings.scalerAlgorithm === 'compact') {
+        const is4k = settings.targetResolution === '4k';
+        this.upscalerManager.initSession(settings.scalerAlgorithm, is4k);
+      }
     }
   }
 
+  public isOnnxActive(): boolean {
+    return this.upscalerManager.isOnnxActive();
+  }
+
   /**
-   * Generates timesteps array based on fixed multiplier or adaptive floating target FPS.
+   * Computes target canvas dimensions for 1440p, 4K, or Auto.
    */
+  public computeTargetDimensions(srcWidth: number, srcHeight: number, _screenWidth = 2560, screenHeight = 1440): { width: number; height: number } {
+    const aspect = (srcWidth > 0 && srcHeight > 0) ? srcWidth / srcHeight : 16 / 9;
+
+    if (this.settings.targetResolution === '4k') {
+      const h = 2160;
+      const w = Math.round(h * aspect);
+      return { width: w, height: h };
+    }
+
+    if (this.settings.targetResolution === '1440p') {
+      const h = 1440;
+      const w = Math.round(h * aspect);
+      return { width: w, height: h };
+    }
+
+    // Auto resolution: adapt to screen or native container
+    const h = Math.max(1440, screenHeight);
+    const w = Math.round(h * aspect);
+    return { width: w, height: h };
+  }
+
   public getInterpolationSteps(sourceFps = 24): number[] {
-    // 1. Adaptive floating multiplier for target FPS (e.g. 60, 75, 120, 144, 240)
     if (this.settings.multiplierMode === 'target_fps' && this.settings.targetFps > 0 && sourceFps > 0) {
       if (sourceFps >= this.settings.targetFps) {
         return [];
@@ -108,7 +136,6 @@ export class PipelineManager {
       return steps;
     }
 
-    // 2. Fixed multiplier (x2, x3, x4)
     switch (this.settings.multiplier) {
       case 2:
         return [0.5];
@@ -135,9 +162,9 @@ export class PipelineManager {
   }
 
   /**
-   * Performs 2-pass FSR 1.0 upscaling (EASU + RCAS).
+   * Performs 2-pass FSR 1.0 upscaling (EASU + RCAS) to target resolution.
    */
-  public renderFsr1440p(
+  public renderFsr(
     commandEncoder: GPUCommandEncoder,
     inputView: GPUTextureView,
     outputTargetView: GPUTextureView,
@@ -282,9 +309,9 @@ export class PipelineManager {
   }
 
   /**
-   * Dispatches selected scaler algorithm (FSR / Anime4K / SPAN / Compact / Bicubic / Off) for any resolution.
+   * Dispatches selected scaler algorithm (FSR / Anime4K / SPAN / Compact / Bicubic / Off) to 1440p or 4K.
    */
-  public upscaleFrame(
+  public async upscaleFrame(
     commandEncoder: GPUCommandEncoder,
     srcTexture: GPUTexture,
     outputTargetView: GPUTextureView,
@@ -292,9 +319,9 @@ export class PipelineManager {
     srcHeight: number,
     targetWidth: number,
     targetHeight: number
-  ): void {
+  ): Promise<void> {
     if (this.settings.scalerAlgorithm === 'fsr') {
-      this.renderFsr1440p(
+      this.renderFsr(
         commandEncoder,
         srcTexture.createView(),
         outputTargetView,
@@ -302,6 +329,16 @@ export class PipelineManager {
         srcHeight,
         targetWidth,
         targetHeight
+      );
+    } else if (this.settings.scalerAlgorithm === 'span' || this.settings.scalerAlgorithm === 'compact') {
+      await this.upscalerManager.renderWithOnnx(
+        srcTexture,
+        outputTargetView,
+        srcWidth,
+        srcHeight,
+        targetWidth,
+        targetHeight,
+        this.settings.fsrSharpness
       );
     } else {
       this.upscalerManager.render(
