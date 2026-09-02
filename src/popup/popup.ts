@@ -161,6 +161,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  function parseVersion(v: string): number[] {
+    return v.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  }
+
+  function isNewerVersion(latest: string, current: string): boolean {
+    const l = parseVersion(latest);
+    const c = parseVersion(current);
+    for (let i = 0; i < Math.max(l.length, c.length); i++) {
+      const lNum = l[i] || 0;
+      const cNum = c[i] || 0;
+      if (lNum > cNum) return true;
+      if (lNum < cNum) return false;
+    }
+    return false;
+  }
+
   // Check Updates from GitHub Releases
   async function checkForUpdates() {
     const t = getTranslation(currentLang);
@@ -173,7 +189,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const release = await res.json();
         const latestTag = release.tag_name || '';
 
-        if (latestTag && latestTag !== CURRENT_VERSION) {
+        if (latestTag && isNewerVersion(latestTag, CURRENT_VERSION)) {
           updateStatusText.innerHTML = `<span style="color:#22c55e;">${t.updateAvailable} ${latestTag}!</span>`;
           checkUpdatesBtn.textContent = t.downloadUpdate;
           checkUpdatesBtn.onclick = () => {
