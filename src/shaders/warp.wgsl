@@ -71,9 +71,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
   let scaleY = uniforms.srcHeight / max(1.0, uniforms.flowHeight);
   let scaleVector = vec2<f32>(scaleX, scaleY);
 
-  // Optical flow displacement in UV coordinates (0.0 .. 1.0)
-  let d0 = (rawFlow0 * scaleVector) / vec2<f32>(uniforms.srcWidth, uniforms.srcHeight);
-  let d1 = (rawFlow1 * scaleVector) / vec2<f32>(uniforms.srcWidth, uniforms.srcHeight);
+  // Optical flow displacement in UV coordinates (0.0 .. 1.0) scaled by stepT
+  let step = clamp(uniforms.stepT, 0.0, 1.0);
+  let d0 = (rawFlow0 * scaleVector * step) / vec2<f32>(uniforms.srcWidth, uniforms.srcHeight);
+  let d1 = (rawFlow1 * scaleVector * (1.0 - step)) / vec2<f32>(uniforms.srcWidth, uniforms.srcHeight);
 
   let warpedUv0 = clamp(uv + d0, vec2<f32>(0.0), vec2<f32>(1.0));
   let warpedUv1 = clamp(uv + d1, vec2<f32>(0.0), vec2<f32>(1.0));
@@ -82,8 +83,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
   let col0 = textureSample(srcTex0, bilinearSampler, warpedUv0).rgb;
   let col1 = textureSample(srcTex1, bilinearSampler, warpedUv1).rgb;
 
-  // 4. Blend using RIFE soft mask and target timestep T
-  let maskWeight = clamp(rawMask * (1.0 - uniforms.stepT) + (1.0 - rawMask) * uniforms.stepT, 0.0, 1.0);
+  // 4. Blend using temporal timestep and motion confidence mask
+  let maskWeight = clamp(mix(step, rawMask, 0.25), 0.0, 1.0);
   let finalColor = mix(col0, col1, maskWeight);
 
   return vec4<f32>(finalColor, 1.0);

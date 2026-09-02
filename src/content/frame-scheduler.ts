@@ -12,19 +12,30 @@ export class FrameScheduler {
   private vfcHandle: number | null = null;
   private intermediateTimers: number[] = [];
 
-  // Frame Textures for T0, T1
-  private texT0: GPUTexture | null = null;
-  private texT1: GPUTexture | null = null;
+  // Triple-buffered frame textures for stable motion interpolation
+  private texPrev: GPUTexture | null = null;
+  private texCurr: GPUTexture | null = null;
+  private texCapture: GPUTexture | null = null;
   private currentWidth = 0;
   private currentHeight = 0;
   private hasCapturedAnyT0 = false;
 
-  // Timing metadata
+  // Timing metadata & PLL clock
   private lastPresentedTime = 0;
   private frameCount = 0;
   private lastFpsUpdate = performance.now();
   private currentFps = 0;
   private sourceFps = 24;
+
+  // PLL frame pacing
+  private lastArrival = performance.now();
+  private intervalMs = 1000 / 24;
+  private schedT = 0;
+
+  // GPU Saver: visibility & intersection
+  private isTabVisible = typeof document !== 'undefined' ? !document.hidden : true;
+  private isVideoIntersecting = true;
+  private intersectionObserver: IntersectionObserver | null = null;
 
   private settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 
@@ -56,6 +67,24 @@ export class FrameScheduler {
     this.video.addEventListener('ended', this.onEnded);
     this.video.addEventListener('loadstart', this.onSeeked);
     this.video.addEventListener('emptied', this.onSeeked);
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+    }
+
+    if (typeof IntersectionObserver !== 'undefined') {
+      try {
+        this.intersectionObserver = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            this.isVideoIntersecting = entry.isIntersecting;
+            if (!this.isVideoIntersecting) {
+              this.clearTimers();
+            }
+          }
+        }, { threshold: 0.05 });
+        this.intersectionObserver.observe(this.video);
+      } catch {}
+    }
   }
 
   private removeEventListeners(): void {
@@ -65,7 +94,27 @@ export class FrameScheduler {
     this.video.removeEventListener('ended', this.onEnded);
     this.video.removeEventListener('loadstart', this.onSeeked);
     this.video.removeEventListener('emptied', this.onSeeked);
+
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    }
+
+    if (this.intersectionObserver) {
+      this.intersectionObserver.disconnect();
+      this.intersectionObserver = null;
+    }
   }
+
+  private onVisibilityChange = () => {
+    this.isTabVisible = typeof document !== 'undefined' ? !document.hidden : true;
+    if (!this.isTabVisible) {
+      this.clearTimers();
+      this.currentFps = 0;
+    } else {
+      this.lastArrival = performance.now();
+      this.schedT = performance.now();
+    }
+  };
 
   private onSeeked = () => {
     this.resetFrameBuffers();
@@ -106,13 +155,27 @@ export class FrameScheduler {
     this.pipelineManager.updateSettings(this.settings);
   }
 
+  private isCompareMode = false;
+
+  public setCompareMode(active: boolean): void {
+    this.isCompareMode = active;
+    if (active) {
+      this.clearTimers();
+    }
+  }
+
+  public getCompareMode(): boolean {
+    return this.isCompareMode;
+  }
+
   private ensureTextures(width: number, height: number): void {
-    if (this.currentWidth === width && this.currentHeight === height && this.texT0 && this.texT1) {
+    if (this.currentWidth === width && this.currentHeight === height && this.texPrev && this.texCurr && this.texCapture) {
       return;
     }
 
-    if (this.texT0) this.texT0.destroy();
-    if (this.texT1) this.texT1.destroy();
+    if (this.texPrev) this.texPrev.destroy();
+    if (this.texCurr) this.texCurr.destroy();
+    if (this.texCapture) this.texCapture.destroy();
 
     const desc: GPUTextureDescriptor = {
       size: [width, height],
@@ -123,8 +186,9 @@ export class FrameScheduler {
         GPUTextureUsage.RENDER_ATTACHMENT
     };
 
-    this.texT0 = this.device.createTexture({ ...desc, label: 'FrameScheduler_T0' });
-    this.texT1 = this.device.createTexture({ ...desc, label: 'FrameScheduler_T1' });
+    this.texPrev = this.device.createTexture({ ...desc, label: 'FrameScheduler_Prev' });
+    this.texCurr = this.device.createTexture({ ...desc, label: 'FrameScheduler_Curr' });
+    this.texCapture = this.device.createTexture({ ...desc, label: 'FrameScheduler_Capture' });
 
     this.currentWidth = width;
     this.currentHeight = height;
@@ -165,14 +229,37 @@ export class FrameScheduler {
   private onVideoFrame = async (now: DOMHighResTimeStamp, metadata: any) => {
     if (!this.isRunning) return;
 
+    if (!this.isTabVisible || !this.isVideoIntersecting) {
+      // GPU Saver: Video is hidden or off-screen, skip compute to save 100% GPU
+      this.scheduleNextVideoFrame();
+      return;
+    }
+
     if (this.video.paused || this.video.ended) {
       this.currentFps = 0;
       this.scheduleNextVideoFrame();
       return;
     }
 
-    const videoWidth = this.video.videoWidth || (this.video.clientWidth ? Math.round(this.video.clientWidth) : 1280);
-    const videoHeight = this.video.videoHeight || (this.video.clientHeight ? Math.round(this.video.clientHeight) : 720);
+    // PLL-smoothed arrival clock (from cadence.js algorithms)
+    const arrival = now || performance.now();
+    const dt = arrival - this.lastArrival;
+    if (dt > 0.5 && dt < 500) {
+      this.intervalMs = this.intervalMs * 0.9 + dt * 0.1;
+    }
+    this.lastArrival = arrival;
+
+    const expected = this.schedT + this.intervalMs;
+    this.schedT = (!this.schedT || Math.abs(arrival - expected) > 80)
+      ? arrival
+      : expected + 0.08 * (arrival - expected);
+
+    const rawW = this.video.videoWidth || (this.video.clientWidth ? Math.round(this.video.clientWidth) : 1280);
+    const rawH = this.video.videoHeight || (this.video.clientHeight ? Math.round(this.video.clientHeight) : 720);
+
+    // Video dimensions must be aligned to 16 for WebGPU compute tiles and EMA-VFI
+    const videoWidth = Math.max(64, Math.floor(rawW / 16) * 16);
+    const videoHeight = Math.max(64, Math.floor(rawH / 16) * 16);
 
     if (videoWidth < 16 || videoHeight < 16) {
       this.scheduleNextVideoFrame();
@@ -181,12 +268,12 @@ export class FrameScheduler {
 
     this.ensureTextures(videoWidth, videoHeight);
 
-    if (!this.texT0 || !this.texT1) {
+    if (!this.texCapture) {
       this.scheduleNextVideoFrame();
       return;
     }
 
-    // 1. Capture incoming video frame into T1 texture
+    // 1. Capture incoming video frame into texCapture
     const captured = await this.captureVideoFrame(videoWidth, videoHeight);
     if (!captured) {
       this.scheduleNextVideoFrame();
@@ -203,65 +290,143 @@ export class FrameScheduler {
       if (detectedFps >= 10 && detectedFps <= 240) {
         this.sourceFps = detectedFps;
       }
+    } else {
+      this.sourceFps = Math.round(1000 / this.intervalMs);
     }
 
     // 3. Anime duplicate frame check
-    const cadenceResult = await this.pipelineManager.evaluateCadence(this.texT1, currentMediaTime, now);
+    const cadenceResult = await this.pipelineManager.evaluateCadence(this.texCapture, currentMediaTime, now);
 
-    // 4. Render base frame T0 -> Canvas
+    // 4. Rotate textures in triple buffer
+    const oldPrev = this.texPrev;
+    this.texPrev = this.texCurr;
+    this.texCurr = this.texCapture;
+    this.texCapture = oldPrev || this.device.createTexture({
+      size: [videoWidth, videoHeight],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
+    });
+
+    // 5. Render base frame -> Canvas
     if (this.hasCapturedAnyT0 && !cadenceResult.isDuplicate) {
-      await this.renderFrame(this.texT0, videoWidth, videoHeight);
+      await this.renderFrame(this.texPrev || this.texCurr, videoWidth, videoHeight);
+    } else if (!this.hasCapturedAnyT0) {
+      await this.renderFrame(this.texCurr, videoWidth, videoHeight);
     }
 
-    // 5. Schedule sub-frame interpolation if enabled
+    // 6. Schedule real motion-interpolated sub-frames if enabled
     const isHighFpsSource = this.sourceFps >= this.settings.autoBypassFps;
-    const shouldInterpolate = this.settings.mode !== 'upscale_only' && !isHighFpsSource && !cadenceResult.isDuplicate && this.hasCapturedAnyT0;
+    const shouldInterpolate = !this.isCompareMode && this.settings.mode !== 'upscale_only' && !isHighFpsSource && !cadenceResult.isDuplicate && this.hasCapturedAnyT0 && !!this.texPrev && !!this.texCurr;
 
     if (shouldInterpolate) {
-      this.scheduleSubframes(deltaT > 0 ? deltaT * 1000 : 41.6, videoWidth, videoHeight);
+      const durationMs = (deltaT > 0.005 && deltaT < 0.2) ? deltaT * 1000 : this.intervalMs;
+      this.scheduleSubframes(durationMs, videoWidth, videoHeight, this.texPrev!, this.texCurr!);
     }
 
-    // 6. Swap T0 and T1 textures
-    const temp = this.texT0;
-    this.texT0 = this.texT1;
-    this.texT1 = temp;
     this.hasCapturedAnyT0 = true;
-
     this.scheduleNextVideoFrame();
   };
 
   private async captureVideoFrame(width: number, height: number): Promise<boolean> {
-    if (!this.texT1) return false;
+    if (!this.texCapture) return false;
 
     try {
-      const bitmap = await createImageBitmap(this.video);
       this.device.queue.copyExternalImageToTexture(
-        { source: bitmap },
-        { texture: this.texT1 },
+        { source: this.video },
+        { texture: this.texCapture },
         [width, height]
       );
-      bitmap.close();
       return true;
     } catch {
-      return false;
+      try {
+        const bitmap = await createImageBitmap(this.video);
+        this.device.queue.copyExternalImageToTexture(
+          { source: bitmap },
+          { texture: this.texCapture },
+          [width, height]
+        );
+        bitmap.close();
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 
-  private scheduleSubframes(frameDurationMs: number, width: number, height: number): void {
+  private scheduleSubframes(
+    frameDurationMs: number,
+    width: number,
+    height: number,
+    t0Texture: GPUTexture,
+    t1Texture: GPUTexture
+  ): void {
     this.clearTimers();
     const steps = this.pipelineManager.getInterpolationSteps(this.sourceFps);
 
     for (const step of steps) {
       const delay = Math.max(4, Math.round(frameDurationMs * step));
       const timer = window.setTimeout(async () => {
-        if (!this.isRunning || this.video.paused || !this.texT0) return;
-        await this.renderFrame(this.texT0, width, height);
+        if (!this.isRunning || this.video.paused) return;
+        await this.renderInterpolated(t0Texture, t1Texture, step, width, height);
       }, delay);
       this.intermediateTimers.push(timer);
     }
   }
 
   private renderLatencyMs = 0;
+
+  private async renderInterpolated(
+    t0Texture: GPUTexture,
+    t1Texture: GPUTexture,
+    stepT: number,
+    srcWidth: number,
+    srcHeight: number
+  ): Promise<void> {
+    const t0 = performance.now();
+    try {
+      const currentTarget = this.gpuContext.getCurrentTexture();
+      const targetView = currentTarget.createView();
+      const targetWidth = this.canvas.width || srcWidth;
+      const targetHeight = this.canvas.height || srcHeight;
+
+      const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Interpolate' });
+
+      // Run real motion estimation + bidirectional warp + upscaling
+      await this.pipelineManager.generateInterpolatedFrame(
+        commandEncoder,
+        t0Texture,
+        t1Texture,
+        stepT,
+        targetView,
+        srcWidth,
+        srcHeight,
+        targetWidth,
+        targetHeight
+      );
+
+      this.device.queue.submit([commandEncoder.finish()]);
+
+      const t1 = performance.now();
+      const frameCost = t1 - t0;
+      this.renderLatencyMs = Math.round((this.renderLatencyMs * 0.8 + frameCost * 0.2) * 10) / 10;
+
+      this.frameCount++;
+      const now = performance.now();
+      const elapsed = now - this.lastFpsUpdate;
+      if (elapsed >= 500) {
+        this.currentFps = Math.round((this.frameCount * 1000) / elapsed);
+        this.frameCount = 0;
+        this.lastFpsUpdate = now;
+      }
+    } catch (e) {
+      console.error('[FrameGen] Interpolation error, fallback to base frame:', e);
+      try {
+        await this.renderFrame(t1Texture, srcWidth, srcHeight);
+      } catch {
+        // Fallback suppressed
+      }
+    }
+  }
 
   private async renderFrame(texture: GPUTexture, srcWidth: number, srcHeight: number): Promise<void> {
     const t0 = performance.now();
@@ -273,7 +438,7 @@ export class FrameScheduler {
 
       const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Render' });
 
-      // Run pipeline upscaling / warping
+      // Run pipeline upscaling
       await this.pipelineManager.upscaleFrame(
         commandEncoder,
         texture,
@@ -318,9 +483,11 @@ export class FrameScheduler {
   public destroy(): void {
     this.stop();
     this.removeEventListeners();
-    if (this.texT0) this.texT0.destroy();
-    if (this.texT1) this.texT1.destroy();
-    this.texT0 = null;
-    this.texT1 = null;
+    if (this.texPrev) this.texPrev.destroy();
+    if (this.texCurr) this.texCurr.destroy();
+    if (this.texCapture) this.texCapture.destroy();
+    this.texPrev = null;
+    this.texCurr = null;
+    this.texCapture = null;
   }
 }

@@ -1,9 +1,11 @@
 import { ExtensionSettings, DEFAULT_SETTINGS } from '../config/defaults';
 import { CadenceDetector, CadenceResult } from '../pipelines/CadenceDetector';
 import { UpscalerManager } from '../models/Upscaler';
+import { NeuralFramegenEngine } from '../webgpu/neural-framegen-engine';
 import fsrEasuShaderSource from '../shaders/fsr_easu.wgsl?raw';
 import fsrRcasShaderSource from '../shaders/fsr_rcas.wgsl?raw';
 import warpShaderSource from '../shaders/warp.wgsl?raw';
+import motionFlowShaderSource from '../shaders/motion_flow.wgsl?raw';
 
 export class PipelineManager {
   private device: GPUDevice;
@@ -12,6 +14,7 @@ export class PipelineManager {
 
   private cadenceDetector: CadenceDetector;
   private upscalerManager: UpscalerManager;
+  private neuralFramegen: NeuralFramegenEngine;
 
   // FSR 1.0 pipelines
   private fsrEasuPipeline: GPURenderPipeline;
@@ -19,9 +22,20 @@ export class PipelineManager {
   private fsrConstBuffer: GPUBuffer;
   private rcasConstBuffer: GPUBuffer;
 
-  // Warp pipeline
+  // Motion Flow & Warp pipelines
+  private motionFlowPipeline: GPUComputePipeline;
+  private motionFlowUniformBuffer: GPUBuffer;
+  private flowTex0: GPUTexture | null = null;
+  private flowTex1: GPUTexture | null = null;
+  private maskTex: GPUTexture | null = null;
+  private flowWidth = 0;
+  private flowHeight = 0;
+
   private warpPipeline: GPURenderPipeline;
   private warpUniformBuffer: GPUBuffer;
+  private warpedTexture: GPUTexture | null = null;
+  private warpedWidth = 0;
+  private warpedHeight = 0;
 
   // Intermediate textures for multi-pass
   private intermediateTexture: GPUTexture | null = null;
@@ -36,6 +50,10 @@ export class PipelineManager {
     this.cadenceDetector = new CadenceDetector(device, settings.cadenceThreshold);
     this.upscalerManager = new UpscalerManager(device, format);
     this.upscalerManager.setMode(settings.scalerAlgorithm);
+    this.neuralFramegen = new NeuralFramegenEngine(device);
+    if (settings.neuralModel) {
+      this.neuralFramegen.setModelType(settings.neuralModel);
+    }
 
     // 1. Build FSR EASU pipeline
     const fsrEasuModule = device.createShaderModule({ label: 'FSR EASU Module', code: fsrEasuShaderSource });
@@ -75,22 +93,33 @@ export class PipelineManager {
       label: 'High-Res Warp Pipeline',
       layout: 'auto',
       vertex: { module: warpModule, entryPoint: 'vs_main' },
-      fragment: { module: warpModule, entryPoint: 'fs_main', targets: [{ format }] },
+      fragment: { module: warpModule, entryPoint: 'fs_main', targets: [{ format: 'rgba8unorm' }] },
       primitive: { topology: 'triangle-list' }
+    });
+
+    // 4. Build Motion Flow Compute pipeline
+    const motionFlowModule = device.createShaderModule({ label: 'Motion Flow Module', code: motionFlowShaderSource });
+    this.motionFlowUniformBuffer = device.createBuffer({
+      size: 32, // 8 x f32
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+    });
+    this.motionFlowPipeline = device.createComputePipeline({
+      label: 'Motion Flow Pipeline',
+      layout: 'auto',
+      compute: { module: motionFlowModule, entryPoint: 'main' }
     });
   }
 
   public updateSettings(settings: Partial<ExtensionSettings>): void {
     this.settings = { ...this.settings, ...settings };
+    if (settings.neuralModel !== undefined && settings.neuralModel !== this.settings.neuralModel) {
+      this.neuralFramegen.setModelType(settings.neuralModel);
+    }
     if (settings.cadenceThreshold !== undefined) {
       this.cadenceDetector.setThreshold(settings.cadenceThreshold);
     }
     if (settings.scalerAlgorithm !== undefined) {
       this.upscalerManager.setMode(settings.scalerAlgorithm);
-      if (settings.scalerAlgorithm === 'span' || settings.scalerAlgorithm === 'compact') {
-        const is4k = settings.targetResolution === '4k';
-        this.upscalerManager.initSession(settings.scalerAlgorithm, is4k);
-      }
     }
   }
 
@@ -340,25 +369,203 @@ export class PipelineManager {
         targetWidth,
         targetHeight
       );
-    } else if (this.settings.scalerAlgorithm === 'span' || this.settings.scalerAlgorithm === 'compact') {
-      await this.upscalerManager.renderWithOnnx(
-        srcTexture,
-        outputTargetView,
-        srcWidth,
-        srcHeight,
-        targetWidth,
-        targetHeight,
-        this.settings.fsrSharpness
-      );
     } else {
       this.upscalerManager.render(
         srcTexture,
         outputTargetView,
         targetWidth,
         targetHeight,
-        this.settings.fsrSharpness
+        this.settings.fsrSharpness,
+        srcWidth,
+        srcHeight
       );
     }
+  }
+
+  public computeMotionFlow(
+    commandEncoder: GPUCommandEncoder,
+    tex0: GPUTexture,
+    tex1: GPUTexture,
+    srcWidth: number,
+    srcHeight: number
+  ): void {
+    this.ensureFlowTextures(srcWidth, srcHeight);
+    if (!this.flowTex0 || !this.flowTex1 || !this.maskTex) return;
+
+    const motionData = new Float32Array([
+      srcWidth,
+      srcHeight,
+      this.flowWidth,
+      this.flowHeight,
+      8.0,  // search radius
+      0.28, // sceneCutThreshold
+      0.0,
+      0.0
+    ]);
+    this.device.queue.writeBuffer(this.motionFlowUniformBuffer, 0, motionData);
+
+    const linearSampler = this.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+
+    const bindGroup = this.device.createBindGroup({
+      layout: this.motionFlowPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.motionFlowUniformBuffer } },
+        { binding: 1, resource: linearSampler },
+        { binding: 2, resource: tex0.createView() },
+        { binding: 3, resource: tex1.createView() },
+        { binding: 4, resource: this.flowTex0.createView() },
+        { binding: 5, resource: this.flowTex1.createView() },
+        { binding: 6, resource: this.maskTex.createView() }
+      ]
+    });
+
+    const pass = commandEncoder.beginComputePass({ label: 'Motion Flow Pass' });
+    pass.setPipeline(this.motionFlowPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(
+      Math.ceil(this.flowWidth / 8),
+      Math.ceil(this.flowHeight / 8)
+    );
+    pass.end();
+  }
+
+  /**
+   * Generates a truly interpolated intermediate frame between tex0 and tex1 at timestep stepT (0.0..1.0),
+   * then runs the active upscaler pipeline to the output target view.
+   */
+  public async generateInterpolatedFrame(
+    commandEncoder: GPUCommandEncoder,
+    tex0: GPUTexture,
+    tex1: GPUTexture,
+    stepT: number,
+    outputTargetView: GPUTextureView,
+    srcWidth: number,
+    srcHeight: number,
+    targetWidth: number,
+    targetHeight: number
+  ): Promise<void> {
+    let modelW = srcWidth;
+    let modelH = srcHeight;
+    if (this.settings.neuralResolution === '720p') {
+      const scale = Math.min(1, 1280 / srcWidth, 720 / srcHeight);
+      modelW = Math.max(64, Math.round(srcWidth * scale));
+      modelH = Math.max(64, Math.round(srcHeight * scale));
+    } else if (this.settings.neuralResolution === '540p') {
+      const scale = Math.min(1, 960 / srcWidth, 540 / srcHeight);
+      modelW = Math.max(64, Math.round(srcWidth * scale));
+      modelH = Math.max(64, Math.round(srcHeight * scale));
+    }
+
+    const alignedW = Math.max(64, Math.floor(modelW / 16) * 16);
+    const alignedH = Math.max(64, Math.floor(modelH / 16) * 16);
+
+    this.ensureWarpedTexture(alignedW, alignedH);
+    if (!this.warpedTexture) return;
+
+    // A. Neural FrameGen path (EMA-VFI v7s / tfact2 custom WGSL runtime)
+    if (this.settings.framegenEngine === 'neural') {
+      try {
+        const initialized = await this.neuralFramegen.initPipeline(alignedW, alignedH);
+        if (initialized) {
+          // Run neural trunk for frame pair (conv0 + convblocks)
+          await this.neuralFramegen.prepPair(tex0, tex1);
+          // Generate subframe at timestep stepT directly into warped intermediate texture
+          this.neuralFramegen.runT(stepT, this.warpedTexture);
+
+          // Upscale neural intermediate frame to final canvas target view
+          await this.upscaleFrame(
+            commandEncoder,
+            this.warpedTexture,
+            outputTargetView,
+            this.neuralFramegen.alignedWidth || alignedW,
+            this.neuralFramegen.alignedHeight || alignedH,
+            targetWidth,
+            targetHeight
+          );
+          return;
+        }
+      } catch (neuralErr) {
+        console.warn('[FrameGen] Neural step failed, falling back to compute flow:', neuralErr);
+      }
+    }
+
+    // B. Fast hardware compute shader motion flow fallback
+    // 1. Compute bidirectional motion flow between T0 and T1
+    this.computeMotionFlow(commandEncoder, tex0, tex1, srcWidth, srcHeight);
+
+    // 2. Warp source frames T0 and T1 to intermediate timestep stepT
+    if (this.flowTex0 && this.flowTex1 && this.maskTex) {
+      this.warpFrames(
+        commandEncoder,
+        this.warpedTexture.createView(),
+        tex0,
+        tex1,
+        this.flowTex0,
+        this.flowTex1,
+        this.maskTex,
+        srcWidth,
+        srcHeight,
+        this.flowWidth,
+        this.flowHeight,
+        stepT
+      );
+    }
+
+    // 3. Upscale warped intermediate frame to final canvas target view
+    await this.upscaleFrame(
+      commandEncoder,
+      this.warpedTexture,
+      outputTargetView,
+      srcWidth,
+      srcHeight,
+      targetWidth,
+      targetHeight
+    );
+  }
+
+  private ensureFlowTextures(srcWidth: number, srcHeight: number): void {
+    const fW = Math.max(32, Math.round(srcWidth / 8));
+    const fH = Math.max(18, Math.round(srcHeight / 8));
+    if (this.flowWidth === fW && this.flowHeight === fH && this.flowTex0 && this.flowTex1 && this.maskTex) {
+      return;
+    }
+    if (this.flowTex0) this.flowTex0.destroy();
+    if (this.flowTex1) this.flowTex1.destroy();
+    if (this.maskTex) this.maskTex.destroy();
+
+    this.flowWidth = fW;
+    this.flowHeight = fH;
+
+    const desc: GPUTextureDescriptor = {
+      size: [fW, fH],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
+    };
+
+    this.flowTex0 = this.device.createTexture({ ...desc, label: 'MotionFlow_T0' });
+    this.flowTex1 = this.device.createTexture({ ...desc, label: 'MotionFlow_T1' });
+    this.maskTex = this.device.createTexture({ ...desc, label: 'MotionFlow_Mask' });
+  }
+
+  private ensureWarpedTexture(srcWidth: number, srcHeight: number): void {
+    const w16 = Math.max(64, Math.floor(srcWidth / 16) * 16);
+    const h16 = Math.max(64, Math.floor(srcHeight / 16) * 16);
+    if (this.warpedTexture && this.warpedWidth === w16 && this.warpedHeight === h16) {
+      return;
+    }
+    if (this.warpedTexture) {
+      this.warpedTexture.destroy();
+    }
+    this.warpedWidth = w16;
+    this.warpedHeight = h16;
+    this.warpedTexture = this.device.createTexture({
+      size: [w16, h16],
+      format: 'rgba8unorm',
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.STORAGE_BINDING
+    });
   }
 
   private ensureIntermediateTexture(width: number, height: number): void {
@@ -378,14 +585,32 @@ export class PipelineManager {
   }
 
   public destroy(): void {
+    this.neuralFramegen.destroy();
     this.cadenceDetector.destroy();
     this.upscalerManager.destroy();
     if (this.intermediateTexture) {
       this.intermediateTexture.destroy();
       this.intermediateTexture = null;
     }
+    if (this.warpedTexture) {
+      this.warpedTexture.destroy();
+      this.warpedTexture = null;
+    }
+    if (this.flowTex0) {
+      this.flowTex0.destroy();
+      this.flowTex0 = null;
+    }
+    if (this.flowTex1) {
+      this.flowTex1.destroy();
+      this.flowTex1 = null;
+    }
+    if (this.maskTex) {
+      this.maskTex.destroy();
+      this.maskTex = null;
+    }
     this.fsrConstBuffer.destroy();
     this.rcasConstBuffer.destroy();
     this.warpUniformBuffer.destroy();
+    this.motionFlowUniformBuffer.destroy();
   }
 }

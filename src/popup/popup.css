@@ -18,19 +18,20 @@
 }
 
 body {
-  width: 330px;
+  width: 380px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   background-color: var(--bg-app);
   color: var(--text-main);
-  padding: 14px;
+  padding: 12px;
   user-select: none;
   font-size: 12px;
+  overflow-x: hidden;
 }
 
 .container {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* Header */
@@ -114,6 +115,83 @@ input:checked + .slider:before {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: -4px;
+}
+
+/* Site Profile Row */
+.site-profile-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.site-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #38bdf8;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+  flex-shrink: 0;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+/* Quick Presets */
+.presets-row {
+  display: flex;
+  gap: 6px;
+}
+
+.preset-btn {
+  flex: 1;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  border-radius: 5px;
+  padding: 5px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.preset-btn:hover {
+  background: var(--bg-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* Segmented Control */
@@ -214,11 +292,14 @@ input:checked + .slider:before {
 }
 
 .control-row .dim {
-  flex-shrink: 0;
-  max-width: 120px;
+  flex: 0 0 135px;
+  max-width: 140px;
+  line-height: 1.25;
 }
 
 .select-box {
+  flex: 1;
+  min-width: 0;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -227,8 +308,9 @@ input:checked + .slider:before {
   font-size: 11px;
   outline: none;
   cursor: pointer;
-  max-width: 175px;
+  white-space: nowrap;
   text-overflow: ellipsis;
+  overflow: hidden;
 }
 
 .select-box:focus {

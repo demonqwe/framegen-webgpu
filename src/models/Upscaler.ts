@@ -24,11 +24,11 @@ export class UpscalerManager {
   }
 
   public isOnnxActive(): boolean {
-    return this.currentMode === 'span' || this.currentMode === 'compact';
+    return false;
   }
 
   public async initSession(_mode: ScalerAlgorithm, _target4k = false): Promise<void> {
-    // Native WebGPU pipelines are initialized immediately in constructor
+    // Native WebGPU compute and render pipelines are initialized immediately
   }
 
   private ensureIntermediateTexture(dstWidth: number, dstHeight: number): void {
@@ -51,7 +51,7 @@ export class UpscalerManager {
   }
 
   /**
-   * Runs high-performance native WebGPU neural super-resolution (SPAN x2 & Real-ESRGAN Compact).
+   * Runs high-performance native WebGPU edge-adaptive / deblock compute pass.
    */
   public async renderWithOnnx(
     srcTexture: GPUTexture,
@@ -62,7 +62,7 @@ export class UpscalerManager {
     targetHeight: number,
     sharpness = 0.8
   ): Promise<boolean> {
-    const algo: 'span' | 'compact' = this.currentMode === 'span' ? 'span' : 'compact';
+    const algo: 'span' | 'compact' = (this.currentMode as any) === 'span' ? 'span' : 'compact';
 
     try {
       this.ensureIntermediateTexture(targetWidth, targetHeight);
@@ -122,8 +122,6 @@ export class UpscalerManager {
 
     switch (this.currentMode) {
       case 'anime4k':
-      case 'span':
-      case 'compact':
         passMode = 'anime4k';
         break;
       case 'bicubic':
