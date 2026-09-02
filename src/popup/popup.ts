@@ -2,17 +2,24 @@
  * Popup Controller: Manages settings, telemetry, localization, and GitHub updates.
  */
 
-import { ExtensionSettings, DEFAULT_SETTINGS, OperationMode, Multiplier, MultiplierMode, ScalerAlgorithm, TargetResolution } from '../config/defaults';
+import { ExtensionSettings, DEFAULT_SETTINGS, OperationMode, Multiplier, MultiplierMode, ScalerAlgorithm, TargetResolution, getDomainFromUrl } from '../config/defaults';
 import { getTranslation, Language } from '../i18n/translations';
 
-const CURRENT_VERSION = 'v1.0.6';
 
 document.addEventListener('DOMContentLoaded', async () => {
   const masterToggle = document.getElementById('masterToggle') as HTMLInputElement;
-  const statusText = document.getElementById('statusText') as HTMLElement;
-  const fpsCounter = document.getElementById('fpsCounter') as HTMLElement;
-  const videoRes = document.getElementById('videoRes') as HTMLElement;
 
+  const siteDomainText = document.getElementById('siteDomainText') as HTMLElement;
+  const makeDefaultBtn = document.getElementById('makeDefaultBtn') as HTMLButtonElement;
+
+  const framegenEngineSelect = document.getElementById('framegenEngineSelect') as HTMLSelectElement;
+  const neuralModelSelect = document.getElementById('neuralModelSelect') as HTMLSelectElement;
+  const neuralModelRow = document.getElementById('neuralModelRow') as HTMLElement;
+  const neuralResolutionSelect = document.getElementById('neuralResolutionSelect') as HTMLSelectElement;
+  const neuralResolutionRow = document.getElementById('neuralResolutionRow') as HTMLElement;
+  const presetAnimeBtn = document.getElementById('presetAnimeBtn') as HTMLButtonElement;
+  const presetCinemaBtn = document.getElementById('presetCinemaBtn') as HTMLButtonElement;
+  const presetEcoBtn = document.getElementById('presetEcoBtn') as HTMLButtonElement;
   const scalerSelect = document.getElementById('scalerSelect') as HTMLSelectElement;
   const targetResSelect = document.getElementById('targetResSelect') as HTMLSelectElement;
   const multiplierModeSelect = document.getElementById('multiplierModeSelect') as HTMLSelectElement;
@@ -24,17 +31,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   const autoBypassFpsInput = document.getElementById('autoBypassFpsInput') as HTMLInputElement;
   const fsrSharpness = document.getElementById('fsrSharpness') as HTMLInputElement;
   const sharpnessValue = document.getElementById('sharpnessValue') as HTMLElement;
+  const sharpnessRow = document.getElementById('sharpnessRow') as HTMLElement;
   const animeCadenceDetection = document.getElementById('animeCadenceDetection') as HTMLInputElement;
   const showSideControls = document.getElementById('showSideControls') as HTMLInputElement;
   const segButtons = document.querySelectorAll<HTMLButtonElement>('.seg-btn');
 
   const langRu = document.getElementById('langRu') as HTMLElement;
   const langEn = document.getElementById('langEn') as HTMLElement;
-  const checkUpdatesBtn = document.getElementById('checkUpdatesBtn') as HTMLButtonElement;
-  const updateStatusText = document.getElementById('updateStatusText') as HTMLElement;
 
   let activeMode: OperationMode = 'hybrid';
   let currentLang: Language = 'ru';
+
+  let currentDomain = 'global';
+  let activeTabId: number | null = null;
+  let siteProfilesMap: Record<string, ExtensionSettings> = {};
+  let globalSettingsObj: ExtensionSettings = { ...DEFAULT_SETTINGS };
+
+  // Determine current site domain from active tab
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs && tabs[0] && tabs[0].url) {
+      activeTabId = tabs[0].id || null;
+      currentDomain = getDomainFromUrl(tabs[0].url);
+    }
+  } catch {}
 
   function applyLanguage(lang: Language) {
     currentLang = lang;
@@ -60,13 +80,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     el('t_brandTitle', t.brandTitle);
     el('t_brandSub', t.brandSub);
-    el('t_fpsCounterLabel', t.fpsCounterLabel);
-    el('t_resolutionLabel', t.resolutionLabel);
-    el('t_playerStatusLabel', t.playerStatusLabel);
     el('t_modeTitle', t.modeTitle);
     el('t_modeHybrid', t.modeHybrid);
     el('t_modeGenOnly', t.modeGenOnly);
     el('t_modeUpscaleOnly', t.modeUpscaleOnly);
+    el('t_framegenEngineLabel', (t as any).framegenEngineLabel);
+    el('t_neuralModelLabel', (t as any).neuralModelLabel);
+    el('t_engineNeural', (t as any).engineNeural);
+    el('t_engineMotionFlow', (t as any).engineMotionFlow);
+    el('t_modelV7s', (t as any).modelV7s);
+    el('t_modelTfact2', (t as any).modelTfact2);
+    el('t_neuralResLabel', (t as any).neuralResLabel);
+    el('t_resNative', (t as any).resNative);
+    el('t_res720p', (t as any).res720p);
+    el('t_res540p', (t as any).res540p);
     el('t_scalerLabel', t.scalerLabel);
     el('t_targetResLabel', t.targetResLabel);
     el('t_frequencyTypeLabel', t.frequencyTypeLabel);
@@ -80,7 +107,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     el('t_animeCadenceLabel', t.animeCadenceLabel);
     el('t_sideControlsLabel', t.sideControlsLabel);
     el('t_footerHint', t.footerHint);
-    checkUpdatesBtn.textContent = t.checkUpdates;
+
+    if (siteDomainText) {
+      if (currentDomain === 'global') {
+        siteDomainText.textContent = `🌐 ${(t as any).globalProfile || 'Глобальный (По умолчанию)'}`;
+      } else {
+        siteDomainText.textContent = `🌐 ${currentDomain}`;
+      }
+    }
+    if (makeDefaultBtn) {
+      makeDefaultBtn.title = (t as any).makeDefaultBtn || 'Сделать по умолчанию для новых сайтов';
+    }
   }
 
   function setMode(mode: OperationMode) {
@@ -104,43 +141,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function applyStatus(status: any) {
-    const t = getTranslation(currentLang);
-    if (!status) {
-      statusText.textContent = t.searchingPlayer;
-      fpsCounter.textContent = '-- FPS';
-      videoRes.textContent = '--';
-      return;
-    }
-
-    const isFresh = Date.now() - (status.timestamp || 0) < 5000;
-    if (status.videoDimensions && status.videoDimensions.width) {
-      videoRes.textContent = `${status.videoDimensions.width}x${status.videoDimensions.height}`;
-    }
-
-    if (status.active && isFresh) {
-      statusText.textContent = status.vsrBypass ? t.nativeVsr : t.playing;
-      statusText.style.color = status.vsrBypass ? '#22c55e' : '#38bdf8';
-      const srcFps = status.sourceFps || 24;
-      fpsCounter.textContent = status.vsrBypass ? `${srcFps} FPS` : `${srcFps} → ${status.fps || 60} FPS`;
-    } else if (status.hasVideo && isFresh) {
-      statusText.textContent = t.paused;
-      statusText.style.color = '#94a3b8';
-      fpsCounter.textContent = '0 FPS';
-    } else {
-      statusText.textContent = status.settings?.isEnabled ? t.searchingPlayer : t.disabled;
-      statusText.style.color = '#64748b';
-      fpsCounter.textContent = '-- FPS';
-    }
+  function updateEngineVisibility(engine: string) {
+    const isNeural = engine === 'neural';
+    if (neuralModelRow) neuralModelRow.style.display = isNeural ? 'flex' : 'none';
+    if (neuralResolutionRow) neuralResolutionRow.style.display = isNeural ? 'flex' : 'none';
   }
 
-  // Load Settings (default isEnabled: false)
-  chrome.storage.local.get(['frameGenSettings', 'activePlayerStatus'], (result) => {
-    const s: ExtensionSettings = result.frameGenSettings ? { ...DEFAULT_SETTINGS, ...result.frameGenSettings } : { ...DEFAULT_SETTINGS };
+  // Load Settings (Per-site profile with fallback to globalSettings)
+  chrome.storage.local.get(['siteProfiles', 'globalSettings', 'frameGenSettings'], (result) => {
+    siteProfilesMap = result.siteProfiles || {};
+    globalSettingsObj = result.globalSettings || result.frameGenSettings || { ...DEFAULT_SETTINGS };
+
+    const s: ExtensionSettings = (currentDomain !== 'global' && siteProfilesMap[currentDomain])
+      ? { ...globalSettingsObj, ...siteProfilesMap[currentDomain] }
+      : { ...globalSettingsObj };
 
     masterToggle.checked = s.isEnabled ?? false;
     currentLang = s.language ?? 'ru';
     applyLanguage(currentLang);
+
+    framegenEngineSelect.value = s.framegenEngine ?? 'neural';
+    neuralModelSelect.value = s.neuralModel ?? 'v7s';
+    neuralResolutionSelect.value = s.neuralResolution ?? 'native';
+    updateEngineVisibility(s.framegenEngine ?? 'neural');
 
     scalerSelect.value = s.scalerAlgorithm ?? 'fsr';
     targetResSelect.value = s.targetResolution ?? '1440p';
@@ -154,62 +177,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     showSideControls.checked = s.showSideControls ?? true;
 
     updateMultiplierModeVisibility(s.multiplierMode ?? 'fixed');
+    updateSharpnessVisibility(s.scalerAlgorithm ?? 'fsr');
     setMode(s.mode ?? 'hybrid');
-
-    if (result.activePlayerStatus) {
-      applyStatus(result.activePlayerStatus);
-    }
   });
 
-  function parseVersion(v: string): number[] {
-    return v.replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
-  }
-
-  function isNewerVersion(latest: string, current: string): boolean {
-    const l = parseVersion(latest);
-    const c = parseVersion(current);
-    for (let i = 0; i < Math.max(l.length, c.length); i++) {
-      const lNum = l[i] || 0;
-      const cNum = c[i] || 0;
-      if (lNum > cNum) return true;
-      if (lNum < cNum) return false;
-    }
-    return false;
-  }
-
-  // Check Updates from GitHub Releases
-  async function checkForUpdates() {
-    const t = getTranslation(currentLang);
-    checkUpdatesBtn.disabled = true;
-    checkUpdatesBtn.textContent = t.checking;
-
-    try {
-      const res = await fetch('https://api.github.com/repos/demonqwe/framegen-webgpu/releases/latest');
-      if (res.ok) {
-        const release = await res.json();
-        const latestTag = release.tag_name || '';
-
-        if (latestTag && isNewerVersion(latestTag, CURRENT_VERSION)) {
-          updateStatusText.innerHTML = `<span style="color:#22c55e;">${t.updateAvailable} ${latestTag}!</span>`;
-          checkUpdatesBtn.textContent = t.downloadUpdate;
-          checkUpdatesBtn.onclick = () => {
-            window.open(release.html_url || 'https://github.com/demonqwe/framegen-webgpu/releases', '_blank');
-          };
-          checkUpdatesBtn.disabled = false;
-          return;
-        }
-      }
-      updateStatusText.textContent = `${CURRENT_VERSION} (${t.latestVersion})`;
-      checkUpdatesBtn.textContent = t.checkUpdates;
-    } catch {
-      updateStatusText.textContent = `${CURRENT_VERSION}`;
-      checkUpdatesBtn.textContent = t.checkUpdates;
-    } finally {
-      checkUpdatesBtn.disabled = false;
+  function updateSharpnessVisibility(scaler: string) {
+    if (sharpnessRow) {
+      sharpnessRow.style.display = (scaler === 'fsr' || scaler === 'anime4k') ? 'flex' : 'none';
     }
   }
-
-  checkUpdatesBtn.addEventListener('click', checkForUpdates);
 
   // Language Switch Handlers
   langRu.addEventListener('click', () => {
@@ -222,31 +198,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     saveAndApplySettings();
   });
 
-  // Telemetry updates listener
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.activePlayerStatus) {
-      applyStatus(changes.activePlayerStatus.newValue);
-    }
-  });
-
-  const pollInterval = window.setInterval(() => {
-    chrome.storage.local.get(['activePlayerStatus'], (res) => {
-      if (res.activePlayerStatus) {
-        applyStatus(res.activePlayerStatus);
-      }
-    });
-  }, 500);
-
-  window.addEventListener('unload', () => clearInterval(pollInterval));
-
-  // Save Settings
-  function saveAndApplySettings() {
+  function getFormSettings(): ExtensionSettings {
     const sh = parseFloat(fsrSharpness.value);
     const bypassVal = parseInt(autoBypassFpsInput.value, 10);
-    const updatedSettings: ExtensionSettings = {
+    return {
       isEnabled: masterToggle.checked,
       language: currentLang,
       mode: activeMode,
+      framegenEngine: (framegenEngineSelect.value as any) || 'neural',
+      neuralModel: (neuralModelSelect.value as any) || 'v7s',
+      neuralResolution: (neuralResolutionSelect.value as any) || 'native',
       multiplierMode: multiplierModeSelect.value as MultiplierMode,
       multiplier: parseInt(multiplierSelect.value, 10) as Multiplier,
       targetFps: parseInt(targetFpsSelect.value, 10),
@@ -259,13 +220,100 @@ document.addEventListener('DOMContentLoaded', async () => {
       showSideControls: showSideControls.checked,
       showDebug: false
     };
-
-    chrome.storage.local.set({ frameGenSettings: updatedSettings });
   }
+
+  // Save Settings
+  function saveAndApplySettings() {
+    const updatedSettings = getFormSettings();
+
+    if (currentDomain !== 'global') {
+      siteProfilesMap[currentDomain] = updatedSettings;
+      chrome.storage.local.set({
+        siteProfiles: siteProfilesMap,
+        frameGenSettings: updatedSettings
+      });
+    } else {
+      globalSettingsObj = updatedSettings;
+      chrome.storage.local.set({
+        globalSettings: updatedSettings,
+        frameGenSettings: updatedSettings
+      });
+    }
+
+    if (activeTabId) {
+      chrome.tabs.sendMessage(activeTabId, {
+        type: 'SETTINGS_UPDATED',
+        settings: updatedSettings,
+        domain: currentDomain
+      }).catch(() => {});
+    }
+  }
+
+  // Set Default Template Button
+  makeDefaultBtn?.addEventListener('click', () => {
+    const current = getFormSettings();
+    globalSettingsObj = current;
+    chrome.storage.local.set({
+      globalSettings: current,
+      frameGenSettings: current
+    });
+    const orig = makeDefaultBtn.textContent;
+    makeDefaultBtn.textContent = '✅ Сохранено!';
+    setTimeout(() => {
+      if (makeDefaultBtn) makeDefaultBtn.textContent = orig;
+    }, 1500);
+  });
 
   // Event Listeners
   masterToggle.addEventListener('change', saveAndApplySettings);
-  scalerSelect.addEventListener('change', saveAndApplySettings);
+  framegenEngineSelect.addEventListener('change', () => {
+    updateEngineVisibility(framegenEngineSelect.value);
+    saveAndApplySettings();
+  });
+  neuralModelSelect.addEventListener('change', saveAndApplySettings);
+  neuralResolutionSelect.addEventListener('change', saveAndApplySettings);
+
+  // Quick Presets
+  presetAnimeBtn?.addEventListener('click', () => {
+    masterToggle.checked = true;
+    setMode('hybrid');
+    framegenEngineSelect.value = 'neural';
+    neuralModelSelect.value = 'tfact2';
+    neuralResolutionSelect.value = 'native';
+    scalerSelect.value = 'anime4k';
+    animeCadenceDetection.checked = true;
+    updateEngineVisibility('neural');
+    saveAndApplySettings();
+  });
+
+  presetCinemaBtn?.addEventListener('click', () => {
+    masterToggle.checked = true;
+    setMode('hybrid');
+    framegenEngineSelect.value = 'neural';
+    neuralModelSelect.value = 'v7s';
+    neuralResolutionSelect.value = 'native';
+    scalerSelect.value = 'fsr';
+    animeCadenceDetection.checked = false;
+    updateEngineVisibility('neural');
+    saveAndApplySettings();
+  });
+
+  presetEcoBtn?.addEventListener('click', () => {
+    masterToggle.checked = true;
+    setMode('hybrid');
+    framegenEngineSelect.value = 'neural';
+    neuralModelSelect.value = 'v7s';
+    neuralResolutionSelect.value = '720p';
+    scalerSelect.value = 'fsr';
+    animeCadenceDetection.checked = true;
+    updateEngineVisibility('neural');
+    saveAndApplySettings();
+  });
+
+  scalerSelect.addEventListener('change', () => {
+    updateSharpnessVisibility(scalerSelect.value);
+    saveAndApplySettings();
+  });
   targetResSelect.addEventListener('change', saveAndApplySettings);
   multiplierModeSelect.addEventListener('change', () => {
     updateMultiplierModeVisibility(multiplierModeSelect.value as MultiplierMode);

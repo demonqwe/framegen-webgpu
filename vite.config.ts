@@ -38,6 +38,13 @@ function copyExtensionAssetsPlugin(): Plugin {
         );
       }
 
+      // Copy assets folder (neural models, weights, and JSON specs)
+      const assetsDir = resolve(__dirname, 'assets');
+      const distAssetsDir = resolve(distDir, 'assets');
+      if (fs.existsSync(assetsDir)) {
+        fs.cpSync(assetsDir, distAssetsDir, { recursive: true });
+      }
+
       // Copy models folder if exists
       const modelsDir = resolve(__dirname, 'models');
       const distModelsDir = resolve(distDir, 'models');

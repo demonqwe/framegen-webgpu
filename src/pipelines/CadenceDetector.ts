@@ -25,6 +25,8 @@ export class CadenceDetector {
   // Ring buffer holding up to 4 unique frames
   private history: FrameHistoryEntry[] = [];
   private threshold = 0.01;
+  private isMapping = false;
+  private lastDifference = 1.0;
 
   constructor(device: GPUDevice, threshold = 0.01) {
     this.device = device;
@@ -122,21 +124,29 @@ export class CadenceDetector {
     commandEncoder.copyBufferToBuffer(this.resultBuffer, 0, this.readbackBuffer, 0, 8);
     this.device.queue.submit([commandEncoder.finish()]);
 
-    // 3. Read back computed difference
-    let difference = 0.0;
-    try {
-      await this.readbackBuffer.mapAsync(GPUMapMode.READ);
-      const readArray = new Uint32Array(this.readbackBuffer.getMappedRange());
-      const sumFixed = readArray[0];
-      const count = readArray[1];
-      this.readbackBuffer.unmap();
-
-      if (count > 0) {
-        difference = (sumFixed / 100000.0) / (count / 64.0);
-      }
-    } catch {
-      difference = 0.05; // Fallback if readback was interrupted
+    // 3. Read back computed difference non-blockingly to avoid GPU-CPU pipeline stalls
+    if (!this.isMapping) {
+      this.isMapping = true;
+      this.readbackBuffer.mapAsync(GPUMapMode.READ).then(() => {
+        try {
+          const readArray = new Uint32Array(this.readbackBuffer.getMappedRange());
+          const sumFixed = readArray[0];
+          const count = readArray[1];
+          if (count > 0) {
+            this.lastDifference = (sumFixed / 100000.0) / (count / 64.0);
+          }
+          this.readbackBuffer.unmap();
+        } catch {
+          this.lastDifference = 0.05;
+        } finally {
+          this.isMapping = false;
+        }
+      }).catch(() => {
+        this.isMapping = false;
+      });
     }
+
+    const difference = this.lastDifference;
 
     const isDuplicate = difference < this.threshold;
 

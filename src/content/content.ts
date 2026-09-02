@@ -60,16 +60,23 @@ class ContentController {
   private async init(): Promise<void> {
     console.log(`[FrameGen WebGPU] Active in frame: ${window.location.href}`);
 
-    // 1. Load settings with default isEnabled: false
-    safeStorageGet(['frameGenSettings', 'showDebug', 'siteVsrOverrides'], (result) => {
-      if (result && result.frameGenSettings) {
-        this.settings = { ...this.settings, ...result.frameGenSettings };
+    const host = this.getHostName();
+
+    // 1. Load settings with site profile prioritized over global
+    safeStorageGet(['siteProfiles', 'globalSettings', 'frameGenSettings', 'showDebug', 'siteVsrOverrides'], (result) => {
+      const siteProfiles = result?.siteProfiles || {};
+      const globalSettings = result?.globalSettings || result?.frameGenSettings || DEFAULT_SETTINGS;
+
+      if (siteProfiles[host]) {
+        this.settings = { ...this.settings, ...globalSettings, ...siteProfiles[host] };
+      } else {
+        this.settings = { ...this.settings, ...globalSettings };
       }
+
       if (result && result.showDebug !== undefined) {
         this.showDebugHud = !!result.showDebug;
       }
       if (result && result.siteVsrOverrides) {
-        const host = this.getHostName();
         if (result.siteVsrOverrides[host] !== undefined) {
           this.vsrBypass = !!result.siteVsrOverrides[host];
         }
@@ -82,24 +89,26 @@ class ContentController {
       try {
         chrome.storage.onChanged.addListener((changes, areaName) => {
           if (areaName === 'local') {
-            if (changes.frameGenSettings) {
-              this.settings = { ...this.settings, ...changes.frameGenSettings.newValue };
-              if (this.pipelineManager) {
-                this.pipelineManager.updateSettings(this.settings);
+            const currentHost = this.getHostName();
+            if (changes.siteProfiles) {
+              const newProfiles = changes.siteProfiles.newValue || {};
+              if (newProfiles[currentHost]) {
+                this.applyUpdatedSettings(newProfiles[currentHost]);
               }
-              if (this.scheduler) {
-                this.scheduler.updateSettings(this.settings);
-              }
-              if (!this.settings.isEnabled) {
-                this.disableFrameGen();
-              } else if (this.currentVideo) {
-                if (!this.scheduler) {
-                  this.attachToVideo(this.currentVideo);
-                } else {
-                  this.enableFrameGen();
+            } else if (changes.globalSettings) {
+              safeStorageGet(['siteProfiles'], (res) => {
+                const profiles = res?.siteProfiles || {};
+                if (!profiles[currentHost]) {
+                  this.applyUpdatedSettings(changes.globalSettings.newValue);
                 }
-              }
-              this.updateSidePill();
+              });
+            } else if (changes.frameGenSettings) {
+              safeStorageGet(['siteProfiles'], (res) => {
+                const profiles = res?.siteProfiles || {};
+                if (!profiles[currentHost]) {
+                  this.applyUpdatedSettings(changes.frameGenSettings.newValue);
+                }
+              });
             }
 
             if (changes.showDebug !== undefined) {
@@ -145,14 +154,25 @@ class ContentController {
     window.addEventListener('loadedmetadata', handleGlobalVideoEvent, true);
     window.addEventListener('timeupdate', handleGlobalVideoEvent, true);
 
-    // Keyboard shortcut Shift + D for Diagnostic HUD
+    // Keyboard shortcuts:
+    // Shift + D: Diagnostic HUD
+    // G: Toggle Master On/Off
+    // C: Toggle A/B Compare (Source vs Interpolated)
     window.addEventListener('keydown', (e) => {
+      const targetTag = (e.target as HTMLElement)?.tagName;
+      if (['INPUT', 'TEXTAREA'].includes(targetTag) || (e.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+
       if (e.shiftKey && (e.key === 'D' || e.key === 'd' || e.code === 'KeyD')) {
-        const targetTag = (e.target as HTMLElement)?.tagName;
-        if (!['INPUT', 'TEXTAREA'].includes(targetTag)) {
-          e.preventDefault();
-          this.toggleDebugHud();
-        }
+        e.preventDefault();
+        this.toggleDebugHud();
+      } else if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'g' || e.key === 'G' || e.code === 'KeyG')) {
+        e.preventDefault();
+        this.toggleMaster();
+      } else if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'c' || e.key === 'C' || e.code === 'KeyC')) {
+        e.preventDefault();
+        this.toggleCompare();
       }
     }, true);
 
@@ -244,30 +264,6 @@ class ContentController {
 
   private startTelemetryLoop(): void {
     window.setInterval(() => {
-      const isVisible = !document.hidden;
-      const isPlaying = this.currentVideo ? !this.currentVideo.paused && !this.currentVideo.ended : false;
-      const hasActiveScheduler = !!(this.scheduler && this.settings.isEnabled && !this.vsrBypass);
-      const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
-      const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
-
-      if (this.currentVideo && isVisible) {
-        const payload = {
-          hasVideo: true,
-          active: hasActiveScheduler && isPlaying,
-          vsrBypass: this.vsrBypass,
-          siteHost: this.getHostName(),
-          fps: liveFps,
-          sourceFps: sourceFps,
-          videoDimensions: {
-            width: this.currentVideo.videoWidth || 0,
-            height: this.currentVideo.videoHeight || 0
-          },
-          settings: this.settings,
-          timestamp: Date.now()
-        };
-        safeStorageSet({ activePlayerStatus: payload });
-      }
-
       this.updateSidePill();
       if (this.showDebugHud) {
         this.updateDebugHud();
@@ -457,6 +453,27 @@ class ContentController {
     }
   }
 
+  private applyUpdatedSettings(newSettings: ExtensionSettings): void {
+    this.settings = { ...this.settings, ...newSettings };
+    if (this.pipelineManager) {
+      this.pipelineManager.updateSettings(this.settings);
+    }
+    if (this.scheduler) {
+      this.scheduler.updateSettings(this.settings);
+    }
+    if (!this.settings.isEnabled) {
+      this.disableFrameGen();
+    } else if (this.currentVideo) {
+      if (!this.scheduler) {
+        this.attachToVideo(this.currentVideo);
+      } else {
+        this.enableFrameGen();
+      }
+    }
+    this.updateSidePill();
+    this.updateDebugHud();
+  }
+
   private handleMessage = (
     message: any,
     _sender: chrome.runtime.MessageSender,
@@ -464,22 +481,13 @@ class ContentController {
   ) => {
     if (!message || !message.type) return;
 
-    if (message.type === 'UPDATE_SETTINGS') {
-      this.settings = { ...this.settings, ...message.settings };
-      if (this.pipelineManager) {
-        this.pipelineManager.updateSettings(this.settings);
+    if (message.type === 'SETTINGS_UPDATED' || message.type === 'UPDATE_SETTINGS') {
+      const host = this.getHostName();
+      if (!message.domain || message.domain === host || message.domain === 'global') {
+        this.applyUpdatedSettings(message.settings);
+        sendResponse({ success: true });
+        return;
       }
-      if (this.scheduler) {
-        this.scheduler.updateSettings(this.settings);
-      }
-      if (!this.settings.isEnabled) {
-        this.disableFrameGen();
-      } else {
-        this.enableFrameGen();
-      }
-      this.updateSidePill();
-      sendResponse({ success: true });
-      return;
     }
 
     if (message.type === 'GET_STATUS') {
@@ -628,6 +636,75 @@ class ContentController {
     }
   }
 
+  private isCompareActive = false;
+  private toastTimer: number | null = null;
+
+  private toggleMaster(): void {
+    const host = this.getHostName();
+    this.settings.isEnabled = !this.settings.isEnabled;
+
+    safeStorageGet(['siteProfiles'], (res) => {
+      const profiles = res?.siteProfiles || {};
+      profiles[host] = { ...this.settings };
+      safeStorageSet({
+        siteProfiles: profiles,
+        frameGenSettings: this.settings
+      });
+    });
+
+    this.applyUpdatedSettings(this.settings);
+    this.showToast(`${host}: ${this.settings.isEnabled ? 'ВКЛ (60 FPS)' : 'ВЫКЛ'}`);
+  }
+
+  private toggleCompare(): void {
+    this.isCompareActive = !this.isCompareActive;
+    const overlay = this.overlayManager.getActiveState();
+    if (overlay && overlay.canvas) {
+      overlay.canvas.style.visibility = this.isCompareActive ? 'hidden' : 'visible';
+    }
+    if (this.scheduler) {
+      this.scheduler.setCompareMode(this.isCompareActive);
+    }
+    this.showToast(
+      this.isCompareActive
+        ? 'Сравнение [C]: ИСХОДНОЕ ВИДЕО (Оригинал)'
+        : 'Сравнение [C]: FrameGen (Интерполяция)'
+    );
+    this.updateDebugHud();
+  }
+
+  private showToast(msg: string): void {
+    let toast = document.getElementById('framegen-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'framegen-toast';
+      toast.style.position = 'fixed';
+      toast.style.bottom = '50px';
+      toast.style.left = '50%';
+      toast.style.transform = 'translateX(-50%)';
+      toast.style.padding = '8px 18px';
+      toast.style.background = 'rgba(15, 23, 42, 0.94)';
+      toast.style.backdropFilter = 'blur(8px)';
+      toast.style.border = '1px solid rgba(56, 189, 248, 0.5)';
+      toast.style.borderRadius = '20px';
+      toast.style.color = '#38bdf8';
+      toast.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+      toast.style.fontSize = '12px';
+      toast.style.fontWeight = '600';
+      toast.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
+      toast.style.zIndex = '2147483647';
+      toast.style.pointerEvents = 'none';
+      toast.style.transition = 'opacity 0.2s ease';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.opacity = '1';
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => {
+      if (toast) toast.style.opacity = '0';
+    }, 1800);
+  }
+
   private updateSidePill(): void {
     if (!this.settings.showSideControls) {
       if (this.sidePillElement && this.sidePillElement.parentElement) {
@@ -701,7 +778,6 @@ class ContentController {
     
     const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
     const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
-    const latency = this.scheduler ? this.scheduler.getLatencyMs() : 0;
 
     let fpsText = '';
     if (this.currentVideo?.paused) {
@@ -714,34 +790,42 @@ class ContentController {
       fpsText = `<span style="color:#94a3b8;">${sourceFps} FPS (${t.nativeFps})</span>`;
     }
 
-    const neuralTag = `<span style="color:#38bdf8;font-weight:600;">[${t.hudEngineNeural}]</span>`;
-    const shaderTag = `<span style="color:#94a3b8;">[${t.hudEngineShader}]</span>`;
+    const resTag = this.settings.neuralResolution === '720p' ? '720p' : (this.settings.neuralResolution === '540p' ? '540p' : 'Full');
+    const engineTag = this.settings.framegenEngine === 'neural'
+      ? `<span style="color:#38bdf8;font-weight:600;">EMA-VFI [${this.settings.neuralModel === 'tfact2' ? 'v6 tfact2 4.5MB' : 'v7 small 2.9MB'} | ${resTag}]</span>`
+      : `<span style="color:#94a3b8;">Motion Flow [Hardware Compute]</span>`;
 
-    let upscalerText = `AMD FSR 1.0 ${shaderTag}`;
+    let upscalerText = 'AMD FSR 1.0 (EASU+RCAS)';
     switch (this.settings.scalerAlgorithm) {
-      case 'anime4k': upscalerText = `Anime4K v4.0 ${shaderTag}`; break;
-      case 'span': upscalerText = `SPAN x2 ${neuralTag}`; break;
-      case 'compact': upscalerText = `Real-ESRGAN Compact ${neuralTag}`; break;
-      case 'bicubic': upscalerText = `Bicubic ${shaderTag}`; break;
-      case 'off': upscalerText = '1:1 Direct (Выкл)'; break;
-      case 'fsr': default: upscalerText = `AMD FSR 1.0 (EASU+RCAS) ${shaderTag}`; break;
+      case 'anime4k': upscalerText = 'Anime4K v4.0'; break;
+      case 'bicubic': upscalerText = 'Bicubic Catmull-Rom'; break;
+      case 'off': upscalerText = '1:1 Direct'; break;
+      case 'fsr': default: upscalerText = 'AMD FSR 1.0 (EASU+RCAS)'; break;
     }
 
-    let rowsHtml = '';
+    const cadenceTag = this.settings.animeCadenceDetection
+      ? `<span style="color:#4ade80;">Умный пропуск (ВКЛ)</span>`
+      : `<span style="color:#94a3b8;">Выкл</span>`;
+
+    const compareRow = this.isCompareActive
+      ? `<div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;background:rgba(251,191,36,0.15);padding:2px 4px;border-radius:4px;"><span style="color:#fbbf24;font-weight:700;">Сравнение [C]:</span><span style="color:#fbbf24;font-weight:700;">ОРИГИНАЛ (A)</span></div>`
+      : '';
+
+    let rowsHtml = compareRow;
 
     // Mode-adaptive display
     if (this.settings.mode === 'generator_only') {
       const modeInfo = this.settings.multiplierMode === 'target_fps' ? `Target ${this.settings.targetFps} FPS` : `x${this.settings.multiplier}`;
       rowsHtml += `
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudMode}:</span><span style="color:#38bdf8;">${t.modeGenOnly} (${modeInfo})</span></div>
-        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudLatency}:</span><span style="color:#38bdf8;">${latency} ms</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Интерполяция:</span>${engineTag}</div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Каденс аниме:</span>${cadenceTag}</div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudVideoSource}:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
       `;
     } else if (this.settings.mode === 'upscale_only') {
       rowsHtml += `
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudMode}:</span><span style="color:#38bdf8;">${t.modeUpscaleOnly}</span></div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudUpscaler}:</span><span style="color:#f1f5f9;">${upscalerText}</span></div>
-        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudLatency}:</span><span style="color:#38bdf8;">${latency} ms</span></div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudVideoSource}:</span><span style="color:#f1f5f9;">${vRes}</span></div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudScreenOutput}:</span><span style="color:#f1f5f9;">${outRes}</span></div>
       `;
@@ -750,8 +834,9 @@ class ContentController {
       const modeInfo = this.settings.multiplierMode === 'target_fps' ? `Target ${this.settings.targetFps} FPS` : `x${this.settings.multiplier}`;
       rowsHtml += `
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudMode}:</span><span style="color:#38bdf8;">${t.modeHybrid} (${modeInfo})</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Интерполяция:</span>${engineTag}</div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudUpscaler}:</span><span style="color:#f1f5f9;">${upscalerText}</span></div>
-        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudLatency}:</span><span style="color:#38bdf8;">${latency} ms</span></div>
+        <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Каденс аниме:</span>${cadenceTag}</div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudVideoSource}:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
         <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">${t.hudScreenOutput}:</span><span style="color:#f1f5f9;">${outRes}</span></div>
       `;
@@ -763,7 +848,7 @@ class ContentController {
         ${fpsText}
       </div>
       ${rowsHtml}
-      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">${t.hudHideHint}</div>
+      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">G: Вкл/Выкл • C: Сравнение • Shift+D: Скрыть</div>
     `;
   }
 }

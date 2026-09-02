@@ -25,21 +25,22 @@
         <span class="slider"></span>
       </label>
     </header>
+    <!-- Site Profile Bar -->
+    <div class="site-profile-row">
+      <div class="site-badge">
+        <span class="site-dot" id="siteDot"></span>
+        <span id="siteDomainText">🌐 Определение сайта...</span>
+      </div>
+      <button type="button" class="btn-ghost" id="makeDefaultBtn" title="Сделать эти настройки шаблоном для всех новых сайтов">
+        💾 По умолчанию
+      </button>
+    </div>
 
-    <!-- Status Panel -->
-    <div class="panel">
-      <div class="panel-row">
-        <span class="dim" id="t_fpsCounterLabel">Частота кадров</span>
-        <span class="val highlight" id="fpsCounter">-- FPS</span>
-      </div>
-      <div class="panel-row">
-        <span class="dim" id="t_resolutionLabel">Разрешение</span>
-        <span class="val" id="videoRes">--</span>
-      </div>
-      <div class="panel-row">
-        <span class="dim" id="t_playerStatusLabel">Статус плеера</span>
-        <span class="val" id="statusText">Поиск плеера...</span>
-      </div>
+    <!-- Quick Presets -->
+    <div class="presets-row">
+      <button type="button" class="preset-btn" id="presetAnimeBtn" title="Аниме: T-Fact2 + Anime4K + Каденс">🌸 Аниме</button>
+      <button type="button" class="preset-btn" id="presetCinemaBtn" title="Кино: v7 Small + FSR 1.0">🎬 Кино</button>
+      <button type="button" class="preset-btn" id="presetEcoBtn" title="Эко: v7s + 720p">⚡ Эко / 720p</button>
     </div>
 
     <!-- Mode Selector -->
@@ -53,14 +54,37 @@
     <!-- Controls -->
     <div class="panel">
       <div class="control-row">
+        <label for="framegenEngineSelect" class="dim" id="t_framegenEngineLabel">Движок генерации</label>
+        <select id="framegenEngineSelect" class="select-box">
+          <option value="neural" id="t_engineNeural">EMA-VFI (WebGPU)</option>
+          <option value="motion_flow" id="t_engineMotionFlow">Motion Flow (Шейдер)</option>
+        </select>
+      </div>
+
+      <div class="control-row" id="neuralModelRow">
+        <label for="neuralModelSelect" class="dim" id="t_neuralModelLabel">Модель нейросети</label>
+        <select id="neuralModelSelect" class="select-box">
+          <option value="v7s" id="t_modelV7s">v7 Small (2.9 МБ)</option>
+          <option value="tfact2" id="t_modelTfact2">v6 T-Fact2 (4.5 МБ)</option>
+        </select>
+      </div>
+
+      <div class="control-row" id="neuralResolutionRow">
+        <label for="neuralResolutionSelect" class="dim" id="t_neuralResLabel">Качество нейросети</label>
+        <select id="neuralResolutionSelect" class="select-box">
+          <option value="native" id="t_resNative">Нативное (5060 Ti / Full)</option>
+          <option value="720p" id="t_res720p">720p (Сбалансированное)</option>
+          <option value="540p" id="t_res540p">540p (Слабый ПК/Ноутбук)</option>
+        </select>
+      </div>
+
+      <div class="control-row">
         <label for="scalerSelect" class="dim" id="t_scalerLabel">Алгоритм апскейла</label>
         <select id="scalerSelect" class="select-box">
-          <option value="fsr">AMD FSR 1.0 (Шейдер)</option>
-          <option value="anime4k">Anime4K v4.0 (Шейдер)</option>
-          <option value="span">SPAN x2 (Нейросеть)</option>
-          <option value="compact">Real-ESRGAN (Нейросеть)</option>
-          <option value="bicubic">Bicubic (Шейдер)</option>
-          <option value="off">Выкл (1:1)</option>
+          <option value="fsr">AMD FSR 1.0 (EASU + RCAS)</option>
+          <option value="anime4k">Anime4K v4.0 (Контуры аниме)</option>
+          <option value="bicubic">Bicubic Catmull-Rom (Сплайн)</option>
+          <option value="off">Выкл (1:1 Direct)</option>
         </select>
       </div>
 
@@ -111,7 +135,7 @@
         </div>
       </div>
 
-      <div class="control-row-col">
+      <div class="control-row-col" id="sharpnessRow">
         <div class="label-val-row">
           <span class="dim" id="t_sharpnessLabel">Резкость и шарпенинг</span>
           <span class="val-num" id="sharpnessValue">80%</span>
@@ -134,19 +158,9 @@
       </div>
     </div>
 
-    <!-- GitHub Update Section -->
-    <div class="panel" style="padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
-      <div style="display: flex; align-items: center; gap: 6px;">
-        <span style="color: #94a3b8;">GitHub:</span>
-        <span id="updateStatusText" style="color: #38bdf8;">v1.0.6</span>
-      </div>
-      <button type="button" id="checkUpdatesBtn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 4px; padding: 3px 8px; font-size: 10px; cursor: pointer;">
-        Проверить обновления
-      </button>
-    </div>
-
-    <footer class="footer">
-      <span id="t_footerHint">Нажмите Shift+D во время видео для мониторинга</span>
+    <footer class="footer" style="display: flex; justify-content: space-between; align-items: center; color: #64748b; font-size: 10px; padding-top: 4px;">
+      <span id="t_footerHint">G: Вкл/Выкл • C: Сравнение • Shift+D: HUD</span>
+      <span style="color: #475569;">v1.1.0</span>
     </footer>
   </div>
 
