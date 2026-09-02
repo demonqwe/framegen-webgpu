@@ -1,47 +1,22 @@
-import * as ort from 'onnxruntime-web';
 import { ScalerAlgorithm } from '../config/defaults';
 import { Anime4KPass } from '../webgpu/anime4k-pass';
-import { TensorTextureConverter, calculatePaddedDimensions } from '../webgpu/tensor-utils';
+import { NeuralSRPass } from '../webgpu/neural-sr-pass';
 
 export class UpscalerManager {
   private device: GPUDevice;
   private currentMode: ScalerAlgorithm = 'fsr';
   private anime4kPass: Anime4KPass;
-  private converter: TensorTextureConverter;
+  private neuralSRPass: NeuralSRPass;
 
-  // ONNX Inference Sessions
-  private spanSession: ort.InferenceSession | null = null;
-  private compactSession: ort.InferenceSession | null = null;
-  private compact4kSession: ort.InferenceSession | null = null;
-  private isInitializing = false;
-  private isInferencing = false;
-  private hasCompletedInference = false;
-
-  // Intermediate GPU Buffers for ONNX NHWC execution
-  private inputBuffer: GPUBuffer | null = null;
-  private outputBuffer: GPUBuffer | null = null;
-  private outputTexture: GPUTexture | null = null;
+  // Output storage texture for neural compute passes
+  private intermediateTexture: GPUTexture | null = null;
   private currentBufferWidth = 0;
   private currentBufferHeight = 0;
 
   constructor(device: GPUDevice, presentationFormat: GPUTextureFormat) {
     this.device = device;
     this.anime4kPass = new Anime4KPass(device, presentationFormat);
-    this.converter = new TensorTextureConverter(device);
-
-    // Share GPUDevice with ONNX Runtime WebGPU JSEP
-    this.configureWebGpuDevice();
-  }
-
-  private configureWebGpuDevice(): void {
-    try {
-      if (!ort.env.webgpu) {
-        (ort.env as any).webgpu = {};
-      }
-      ort.env.webgpu.device = this.device;
-    } catch (e) {
-      console.warn('[FrameGen] WebGPU device configuration warning:', e);
-    }
+    this.neuralSRPass = new NeuralSRPass(device);
   }
 
   public setMode(mode: ScalerAlgorithm): void {
@@ -49,86 +24,34 @@ export class UpscalerManager {
   }
 
   public isOnnxActive(): boolean {
-    if (this.currentMode === 'span' && this.spanSession) return true;
-    if (this.currentMode === 'compact' && (this.compactSession || this.compact4kSession)) return true;
-    return false;
+    return this.currentMode === 'span' || this.currentMode === 'compact';
   }
 
-  public async initSession(mode: ScalerAlgorithm, target4k = false): Promise<void> {
-    if (this.isInitializing) return;
-    this.isInitializing = true;
-    this.configureWebGpuDevice();
-
-    try {
-      if (mode === 'span' && !this.spanSession) {
-        const modelUrl = chrome?.runtime?.getURL ? chrome.runtime.getURL('models/span_720p_to_1440p_fp16.onnx') : 'models/span_720p_to_1440p_fp16.onnx';
-        try {
-          this.spanSession = await ort.InferenceSession.create(modelUrl, {
-            executionProviders: ['webgpu'],
-            graphOptimizationLevel: 'all'
-          });
-          console.log('[FrameGen] SPAN x2 ONNX session initialized on shared WebGPU device.');
-        } catch (e) {
-          console.warn('[FrameGen] SPAN x2 model not loaded, will run in WGSL mode.', e);
-        }
-      } else if (mode === 'compact') {
-        const modelFileName = target4k ? 'compact_anime_4k_fp16.onnx' : 'realesr_compact_animevideov3_x2_fp16.onnx';
-        const modelUrl = chrome?.runtime?.getURL ? chrome.runtime.getURL(`models/${modelFileName}`) : `models/${modelFileName}`;
-        try {
-          const session = await ort.InferenceSession.create(modelUrl, {
-            executionProviders: ['webgpu'],
-            graphOptimizationLevel: 'all'
-          });
-          if (target4k) {
-            this.compact4kSession = session;
-          } else {
-            this.compactSession = session;
-          }
-          console.log(`[FrameGen] Real-ESRGAN Compact (${target4k ? '4K' : '2x'}) ONNX session initialized on shared WebGPU device.`);
-        } catch (e) {
-          console.warn('[FrameGen] Real-ESRGAN Compact model not loaded, will run in WGSL mode.', e);
-        }
-      }
-    } finally {
-      this.isInitializing = false;
-    }
+  public async initSession(_mode: ScalerAlgorithm, _target4k = false): Promise<void> {
+    // Native WebGPU pipelines are initialized immediately in constructor
   }
 
-  private ensureBuffers(srcWidth: number, srcHeight: number, dstWidth: number, dstHeight: number): void {
-    if (this.currentBufferWidth === srcWidth && this.currentBufferHeight === srcHeight && this.inputBuffer && this.outputBuffer && this.outputTexture) {
+  private ensureIntermediateTexture(dstWidth: number, dstHeight: number): void {
+    if (this.currentBufferWidth === dstWidth && this.currentBufferHeight === dstHeight && this.intermediateTexture) {
       return;
     }
 
-    if (this.inputBuffer) this.inputBuffer.destroy();
-    if (this.outputBuffer) this.outputBuffer.destroy();
-    if (this.outputTexture) this.outputTexture.destroy();
+    if (this.intermediateTexture) {
+      this.intermediateTexture.destroy();
+    }
 
-    const inSize = 3 * srcWidth * srcHeight * 4; // float32 NHWC
-    const outSize = 3 * dstWidth * dstHeight * 4; // float32 NHWC
-
-    // Provide all buffer usage flags needed by WebGPU JSEP compute kernels
-    this.inputBuffer = this.device.createBuffer({
-      size: inSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
-    });
-
-    this.outputBuffer = this.device.createBuffer({
-      size: outSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
-    });
-
-    this.outputTexture = this.device.createTexture({
+    this.intermediateTexture = this.device.createTexture({
       size: [dstWidth, dstHeight],
       format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.STORAGE_BINDING
     });
 
-    this.currentBufferWidth = srcWidth;
-    this.currentBufferHeight = srcHeight;
+    this.currentBufferWidth = dstWidth;
+    this.currentBufferHeight = dstHeight;
   }
 
   /**
-   * Runs actual ONNX model inference on WebGPU with mutex lock and non-blocking display.
+   * Runs high-performance native WebGPU neural super-resolution (SPAN x2 & Real-ESRGAN Compact).
    */
   public async renderWithOnnx(
     srcTexture: GPUTexture,
@@ -139,103 +62,48 @@ export class UpscalerManager {
     targetHeight: number,
     sharpness = 0.8
   ): Promise<boolean> {
-    const activeSession = (this.currentMode === 'span' ? this.spanSession : (targetWidth > 2560 ? this.compact4kSession : this.compactSession));
-    if (!activeSession) {
-      this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
-      return false;
-    }
-
-    // Mutex guard: Prevent "Session already started" re-entrancy error
-    if (this.isInferencing) {
-      if (this.hasCompletedInference && this.outputTexture) {
-        this.anime4kPass.render(this.outputTexture, outputTargetView, targetWidth, targetHeight, {
-          strength: sharpness,
-          thinningThreshold: 0.05,
-          scalerMode: 'off'
-        });
-        return true;
-      }
-      this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
-      return false;
-    }
-
-    this.isInferencing = true;
-    let inputTensor: ort.Tensor | null = null;
-    let results: Record<string, ort.Tensor> | null = null;
+    const algo: 'span' | 'compact' = this.currentMode === 'span' ? 'span' : 'compact';
 
     try {
-      this.configureWebGpuDevice();
-      const paddedIn = calculatePaddedDimensions(srcWidth, srcHeight, 16);
-      const paddedOut = calculatePaddedDimensions(targetWidth, targetHeight, 16);
-      const dstW = targetWidth;
-      const dstH = targetHeight;
-      this.ensureBuffers(paddedIn.paddedWidth, paddedIn.paddedHeight, paddedOut.paddedWidth, paddedOut.paddedHeight);
-
-      if (!this.inputBuffer || !this.outputBuffer || !this.outputTexture) {
+      this.ensureIntermediateTexture(targetWidth, targetHeight);
+      if (!this.intermediateTexture) {
         this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
         return false;
       }
 
-      // 1. Texture -> NHWC GPU Buffer
-      this.converter.convertTextureToNHWC(srcTexture, this.inputBuffer, paddedIn);
-
-      // 2. Wrap buffer as native NHWC ONNX Tensor [1, H, W, 3] on shared GPUDevice
-      if ((ort.Tensor as any).fromGpuBuffer) {
-        try {
-          inputTensor = (ort.Tensor as any).fromGpuBuffer(this.inputBuffer, {
-            dataType: 'float32',
-            dims: [1, paddedIn.paddedHeight, paddedIn.paddedWidth, 3]
-          });
-        } catch {}
-      }
-
-      if (inputTensor) {
-        const feeds: Record<string, ort.Tensor> = {};
-        feeds[activeSession.inputNames[0]] = inputTensor;
-        results = await activeSession.run(feeds);
-        const outputTensor = results[activeSession.outputNames[0]];
-
-        // 3. NHWC GPU Buffer -> Output Texture
-        if (outputTensor) {
-          if ((outputTensor as any).location === 'gpu-buffer' && (outputTensor as any).gpuBuffer) {
-            this.converter.convertNHWCToTexture((outputTensor as any).gpuBuffer, this.outputTexture, paddedOut);
-          } else if (outputTensor.data) {
-            const rawData = outputTensor.data as Float32Array;
-            this.device.queue.writeBuffer(this.outputBuffer, 0, rawData.buffer, rawData.byteOffset, rawData.byteLength);
-            this.converter.convertNHWCToTexture(this.outputBuffer, this.outputTexture, paddedOut);
-          } else {
-            this.converter.convertNHWCToTexture(this.outputBuffer, this.outputTexture, paddedOut);
-          }
-
-          this.hasCompletedInference = true;
-          this.anime4kPass.render(this.outputTexture, outputTargetView, dstW, dstH, {
-            strength: sharpness,
-            thinningThreshold: 0.05,
-            scalerMode: 'off'
-          });
-          return true;
+      // 1. Execute Neural SR Compute Pass on GPU (Zero-Copy)
+      this.neuralSRPass.render(
+        srcTexture,
+        this.intermediateTexture,
+        srcWidth,
+        srcHeight,
+        {
+          algorithm: algo,
+          strength: sharpness,
+          targetWidth,
+          targetHeight
         }
-      }
+      );
+
+      // 2. Output directly to the presentation canvas
+      this.anime4kPass.render(
+        this.intermediateTexture,
+        outputTargetView,
+        targetWidth,
+        targetHeight,
+        {
+          strength: sharpness,
+          thinningThreshold: 0.05,
+          scalerMode: 'off'
+        }
+      );
+
+      return true;
     } catch (e) {
-      console.warn('[FrameGen] ONNX inference fallback:', e);
-    } finally {
-      this.isInferencing = false;
-      // Free VRAM tensors on each frame to prevent memory leaks
-      if (inputTensor && (inputTensor as any).dispose) {
-        try { (inputTensor as any).dispose(); } catch {}
-      }
-      if (results) {
-        for (const k of Object.keys(results)) {
-          if (results[k] && (results[k] as any).dispose) {
-            try { (results[k] as any).dispose(); } catch {}
-          }
-        }
-      }
+      console.warn('[FrameGen] Neural SR pass fallback:', e);
+      this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
+      return false;
     }
-
-    // Fallback pass (never black screen)
-    this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
-    return false;
   }
 
   /**
@@ -287,12 +155,11 @@ export class UpscalerManager {
   }
 
   public destroy(): void {
-    this.spanSession = null;
-    this.compactSession = null;
-    this.compact4kSession = null;
     this.anime4kPass.destroy();
-    if (this.inputBuffer) this.inputBuffer.destroy();
-    if (this.outputBuffer) this.outputBuffer.destroy();
-    if (this.outputTexture) this.outputTexture.destroy();
+    this.neuralSRPass.destroy();
+    if (this.intermediateTexture) {
+      this.intermediateTexture.destroy();
+      this.intermediateTexture = null;
+    }
   }
 }
