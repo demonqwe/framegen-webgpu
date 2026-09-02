@@ -111,8 +111,13 @@ export class PipelineManager {
   }
 
   public updateSettings(settings: Partial<ExtensionSettings>): void {
+    const oldModel = this.settings.neuralModel;
+    const oldTargetFps = this.settings.targetFps;
+    const oldMode = this.settings.multiplierMode;
+
     this.settings = { ...this.settings, ...settings };
-    if (settings.neuralModel !== undefined && settings.neuralModel !== this.settings.neuralModel) {
+
+    if (settings.neuralModel !== undefined && settings.neuralModel !== oldModel) {
       this.neuralFramegen.setModelType(settings.neuralModel);
     }
     if (settings.cadenceThreshold !== undefined) {
@@ -120,6 +125,9 @@ export class PipelineManager {
     }
     if (settings.scalerAlgorithm !== undefined) {
       this.upscalerManager.setMode(settings.scalerAlgorithm);
+    }
+    if (settings.targetFps !== oldTargetFps || settings.multiplierMode !== oldMode) {
+      this.frameAccumulator = 0.0;
     }
   }
 
@@ -154,11 +162,12 @@ export class PipelineManager {
   private frameAccumulator = 0.0;
 
   public getInterpolationSteps(sourceFps = 24): number[] {
-    if (this.settings.multiplierMode === 'target_fps' && this.settings.targetFps > 0 && sourceFps > 0) {
-      if (sourceFps >= this.settings.targetFps) {
+    const effectiveSource = Math.max(1, sourceFps || 24);
+    if (this.settings.multiplierMode === 'target_fps' && this.settings.targetFps > 0) {
+      if (effectiveSource >= this.settings.targetFps) {
         return [];
       }
-      const k = this.settings.targetFps / sourceFps;
+      const k = this.settings.targetFps / effectiveSource;
       this.frameAccumulator += k;
       const framesToEmit = Math.floor(this.frameAccumulator);
       this.frameAccumulator -= framesToEmit;
