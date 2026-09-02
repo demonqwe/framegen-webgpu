@@ -122,16 +122,26 @@ export class PipelineManager {
     return { width: w, height: h };
   }
 
+  private frameAccumulator = 0.0;
+
   public getInterpolationSteps(sourceFps = 24): number[] {
     if (this.settings.multiplierMode === 'target_fps' && this.settings.targetFps > 0 && sourceFps > 0) {
       if (sourceFps >= this.settings.targetFps) {
         return [];
       }
       const k = this.settings.targetFps / sourceFps;
+      this.frameAccumulator += k;
+      const framesToEmit = Math.floor(this.frameAccumulator);
+      this.frameAccumulator -= framesToEmit;
+
+      const intermediateCount = framesToEmit - 1;
+      if (intermediateCount <= 0) {
+        return [];
+      }
+
       const steps: number[] = [];
-      const stepDelta = 1.0 / k;
-      for (let t = stepDelta; t < 0.99; t += stepDelta) {
-        steps.push(Math.round(t * 1000) / 1000);
+      for (let i = 1; i <= intermediateCount; i++) {
+        steps.push(Math.round((i / framesToEmit) * 1000) / 1000);
       }
       return steps;
     }

@@ -59,8 +59,10 @@ export const TRANSLATIONS = {
     hudLatency: 'Задержка рендера',
     hudMode: 'Режим',
     hudUpscaler: 'Апскейлер',
-    hudEngineOnnx: 'WebGPU ONNX',
-    hudEngineWgsl: 'WGSL Режим',
+    hudEngineNeural: 'Нейросеть WebGPU',
+    hudEngineShader: 'Шейдер WebGPU',
+    hudEngineOnnx: 'Нейросеть WebGPU',
+    hudEngineWgsl: 'Шейдер WebGPU',
     hudVideoSource: 'Видеопоток',
     hudScreenOutput: 'Вывод экрана',
     hudHideHint: 'Shift+D — скрыть'
@@ -123,11 +125,13 @@ export const TRANSLATIONS = {
     hudLatency: 'Render Latency',
     hudMode: 'Mode',
     hudUpscaler: 'Upscaler',
-    hudEngineOnnx: 'WebGPU ONNX',
-    hudEngineWgsl: 'WGSL Pipeline',
-    hudVideoSource: 'Video Stream',
-    hudScreenOutput: 'Canvas Output',
-    hudHideHint: 'Shift+D — toggle'
+    hudEngineNeural: 'Neural WebGPU',
+    hudEngineShader: 'Shader WebGPU',
+    hudEngineOnnx: 'Neural WebGPU',
+    hudEngineWgsl: 'Shader WebGPU',
+    hudVideoSource: 'Video Source',
+    hudScreenOutput: 'Screen Output',
+    hudHideHint: 'Shift+D to hide'
   }
 };
 

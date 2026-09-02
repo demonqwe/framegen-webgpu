@@ -714,17 +714,17 @@ class ContentController {
       fpsText = `<span style="color:#94a3b8;">${sourceFps} FPS (${t.nativeFps})</span>`;
     }
 
-    const isOnnx = this.pipelineManager ? this.pipelineManager.isOnnxActive() : false;
-    const engineTag = isOnnx ? `<span style="color:#38bdf8;font-weight:600;">[${t.hudEngineOnnx}]</span>` : `<span style="color:#94a3b8;">[${t.hudEngineWgsl}]</span>`;
+    const neuralTag = `<span style="color:#38bdf8;font-weight:600;">[${t.hudEngineNeural}]</span>`;
+    const shaderTag = `<span style="color:#94a3b8;">[${t.hudEngineShader}]</span>`;
 
-    let upscalerText = 'AMD FSR 1.0';
+    let upscalerText = `AMD FSR 1.0 ${shaderTag}`;
     switch (this.settings.scalerAlgorithm) {
-      case 'anime4k': upscalerText = 'Anime4K v4.0'; break;
-      case 'span': upscalerText = `SPAN x2 ${engineTag}`; break;
-      case 'compact': upscalerText = `Real-ESRGAN Compact ${engineTag}`; break;
-      case 'bicubic': upscalerText = 'Bicubic Catmull-Rom'; break;
-      case 'off': upscalerText = '1:1 Direct'; break;
-      case 'fsr': default: upscalerText = 'AMD FSR 1.0 (EASU+RCAS)'; break;
+      case 'anime4k': upscalerText = `Anime4K v4.0 ${shaderTag}`; break;
+      case 'span': upscalerText = `SPAN x2 ${neuralTag}`; break;
+      case 'compact': upscalerText = `Real-ESRGAN Compact ${neuralTag}`; break;
+      case 'bicubic': upscalerText = `Bicubic ${shaderTag}`; break;
+      case 'off': upscalerText = '1:1 Direct (Выкл)'; break;
+      case 'fsr': default: upscalerText = `AMD FSR 1.0 (EASU+RCAS) ${shaderTag}`; break;
     }
 
     let rowsHtml = '';
