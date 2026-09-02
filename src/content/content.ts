@@ -264,30 +264,6 @@ class ContentController {
 
   private startTelemetryLoop(): void {
     window.setInterval(() => {
-      const isVisible = !document.hidden;
-      const isPlaying = this.currentVideo ? !this.currentVideo.paused && !this.currentVideo.ended : false;
-      const hasActiveScheduler = !!(this.scheduler && this.settings.isEnabled && !this.vsrBypass);
-      const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
-      const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
-
-      if (this.currentVideo && isVisible) {
-        const payload = {
-          hasVideo: true,
-          active: hasActiveScheduler && isPlaying,
-          vsrBypass: this.vsrBypass,
-          siteHost: this.getHostName(),
-          fps: liveFps,
-          sourceFps: sourceFps,
-          videoDimensions: {
-            width: this.currentVideo.videoWidth || 0,
-            height: this.currentVideo.videoHeight || 0
-          },
-          settings: this.settings,
-          timestamp: Date.now()
-        };
-        safeStorageSet({ activePlayerStatus: payload });
-      }
-
       this.updateSidePill();
       if (this.showDebugHud) {
         this.updateDebugHud();

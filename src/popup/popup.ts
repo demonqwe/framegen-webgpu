@@ -8,9 +8,6 @@ import { getTranslation, Language } from '../i18n/translations';
 
 document.addEventListener('DOMContentLoaded', async () => {
   const masterToggle = document.getElementById('masterToggle') as HTMLInputElement;
-  const statusText = document.getElementById('statusText') as HTMLElement;
-  const fpsCounter = document.getElementById('fpsCounter') as HTMLElement;
-  const videoRes = document.getElementById('videoRes') as HTMLElement;
 
   const siteDomainText = document.getElementById('siteDomainText') as HTMLElement;
   const makeDefaultBtn = document.getElementById('makeDefaultBtn') as HTMLButtonElement;
@@ -83,9 +80,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     el('t_brandTitle', t.brandTitle);
     el('t_brandSub', t.brandSub);
-    el('t_fpsCounterLabel', t.fpsCounterLabel);
-    el('t_resolutionLabel', t.resolutionLabel);
-    el('t_playerStatusLabel', t.playerStatusLabel);
     el('t_modeTitle', t.modeTitle);
     el('t_modeHybrid', t.modeHybrid);
     el('t_modeGenOnly', t.modeGenOnly);
@@ -147,36 +141,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function applyStatus(status: any) {
-    const t = getTranslation(currentLang);
-    if (!status) {
-      statusText.textContent = t.searchingPlayer;
-      fpsCounter.textContent = '-- FPS';
-      videoRes.textContent = '--';
-      return;
-    }
-
-    const isFresh = Date.now() - (status.timestamp || 0) < 5000;
-    if (status.videoDimensions && status.videoDimensions.width) {
-      videoRes.textContent = `${status.videoDimensions.width}x${status.videoDimensions.height}`;
-    }
-
-    if (status.active && isFresh) {
-      statusText.textContent = status.vsrBypass ? t.nativeVsr : t.playing;
-      statusText.style.color = status.vsrBypass ? '#22c55e' : '#38bdf8';
-      const srcFps = status.sourceFps || 24;
-      fpsCounter.textContent = status.vsrBypass ? `${srcFps} FPS` : `${srcFps} → ${status.fps || 60} FPS`;
-    } else if (status.hasVideo && isFresh) {
-      statusText.textContent = t.paused;
-      statusText.style.color = '#94a3b8';
-      fpsCounter.textContent = '0 FPS';
-    } else {
-      statusText.textContent = status.settings?.isEnabled ? t.searchingPlayer : t.disabled;
-      statusText.style.color = '#64748b';
-      fpsCounter.textContent = '-- FPS';
-    }
-  }
-
   function updateEngineVisibility(engine: string) {
     const isNeural = engine === 'neural';
     if (neuralModelRow) neuralModelRow.style.display = isNeural ? 'flex' : 'none';
@@ -184,7 +148,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Load Settings (Per-site profile with fallback to globalSettings)
-  chrome.storage.local.get(['siteProfiles', 'globalSettings', 'frameGenSettings', 'activePlayerStatus'], (result) => {
+  chrome.storage.local.get(['siteProfiles', 'globalSettings', 'frameGenSettings'], (result) => {
     siteProfilesMap = result.siteProfiles || {};
     globalSettingsObj = result.globalSettings || result.frameGenSettings || { ...DEFAULT_SETTINGS };
 
@@ -215,10 +179,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateMultiplierModeVisibility(s.multiplierMode ?? 'fixed');
     updateSharpnessVisibility(s.scalerAlgorithm ?? 'fsr');
     setMode(s.mode ?? 'hybrid');
-
-    if (result.activePlayerStatus) {
-      applyStatus(result.activePlayerStatus);
-    }
   });
 
   function updateSharpnessVisibility(scaler: string) {
@@ -237,23 +197,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyLanguage('en');
     saveAndApplySettings();
   });
-
-  // Telemetry updates listener
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.activePlayerStatus) {
-      applyStatus(changes.activePlayerStatus.newValue);
-    }
-  });
-
-  const pollInterval = window.setInterval(() => {
-    chrome.storage.local.get(['activePlayerStatus'], (res) => {
-      if (res.activePlayerStatus) {
-        applyStatus(res.activePlayerStatus);
-      }
-    });
-  }, 500);
-
-  window.addEventListener('unload', () => clearInterval(pollInterval));
 
   function getFormSettings(): ExtensionSettings {
     const sh = parseFloat(fsrSharpness.value);
