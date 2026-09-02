@@ -15,7 +15,7 @@ export class UpscalerManager {
   private compact4kSession: ort.InferenceSession | null = null;
   private isInitializing = false;
 
-  // Intermediate GPU Buffers for ONNX NCHW execution
+  // Intermediate GPU Buffers for ONNX NHWC execution
   private inputBuffer: GPUBuffer | null = null;
   private outputBuffer: GPUBuffer | null = null;
   private outputTexture: GPUTexture | null = null;
@@ -86,8 +86,8 @@ export class UpscalerManager {
     if (this.outputBuffer) this.outputBuffer.destroy();
     if (this.outputTexture) this.outputTexture.destroy();
 
-    const inSize = 3 * srcWidth * srcHeight * 4; // f32
-    const outSize = 3 * dstWidth * dstHeight * 4; // f32
+    const inSize = 3 * srcWidth * srcHeight * 4; // float32 NHWC
+    const outSize = 3 * dstWidth * dstHeight * 4; // float32 NHWC
 
     this.inputBuffer = this.device.createBuffer({
       size: inSize,
@@ -110,7 +110,7 @@ export class UpscalerManager {
   }
 
   /**
-   * Runs actual ONNX model inference on WebGPU with fallback to WGSL pass.
+   * Runs actual ONNX model inference on WebGPU in native NHWC format with strict memory management.
    */
   public async renderWithOnnx(
     srcTexture: GPUTexture,
@@ -127,6 +127,9 @@ export class UpscalerManager {
       return false;
     }
 
+    let inputTensor: ort.Tensor | null = null;
+    let results: Record<string, ort.Tensor> | null = null;
+
     try {
       const paddedIn = calculatePaddedDimensions(srcWidth, srcHeight, 16);
       const paddedOut = calculatePaddedDimensions(targetWidth, targetHeight, 16);
@@ -139,16 +142,15 @@ export class UpscalerManager {
         return false;
       }
 
-      // 1. Texture -> NCHW GPU Buffer
-      this.converter.convertTextureToNCHW(srcTexture, this.inputBuffer, paddedIn);
+      // 1. Texture -> NHWC GPU Buffer
+      this.converter.convertTextureToNHWC(srcTexture, this.inputBuffer, paddedIn);
 
-      // 2. Wrap buffer as ONNX Tensor with WebGPU location
-      let inputTensor: ort.Tensor | null = null;
+      // 2. Wrap buffer as native NHWC ONNX Tensor [1, H, W, 3]
       if ((ort.Tensor as any).fromGpuBuffer) {
         try {
           inputTensor = (ort.Tensor as any).fromGpuBuffer(this.inputBuffer, {
             dataType: 'float32',
-            dims: [1, 3, paddedIn.paddedHeight, paddedIn.paddedWidth]
+            dims: [1, paddedIn.paddedHeight, paddedIn.paddedWidth, 3]
           });
         } catch {}
       }
@@ -156,19 +158,19 @@ export class UpscalerManager {
       if (inputTensor) {
         const feeds: Record<string, ort.Tensor> = {};
         feeds[activeSession.inputNames[0]] = inputTensor;
-        const results = await activeSession.run(feeds);
+        results = await activeSession.run(feeds);
         const outputTensor = results[activeSession.outputNames[0]];
 
-        // 3. NCHW GPU Buffer -> Output Texture
+        // 3. NHWC GPU Buffer -> Output Texture
         if (outputTensor) {
           if ((outputTensor as any).location === 'gpu-buffer' && (outputTensor as any).gpuBuffer) {
-            this.converter.convertNCHWToTexture((outputTensor as any).gpuBuffer, this.outputTexture, paddedOut);
+            this.converter.convertNHWCToTexture((outputTensor as any).gpuBuffer, this.outputTexture, paddedOut);
           } else if (outputTensor.data) {
             const rawData = outputTensor.data as Float32Array;
             this.device.queue.writeBuffer(this.outputBuffer, 0, rawData.buffer, rawData.byteOffset, rawData.byteLength);
-            this.converter.convertNCHWToTexture(this.outputBuffer, this.outputTexture, paddedOut);
+            this.converter.convertNHWCToTexture(this.outputBuffer, this.outputTexture, paddedOut);
           } else {
-            this.converter.convertNCHWToTexture(this.outputBuffer, this.outputTexture, paddedOut);
+            this.converter.convertNHWCToTexture(this.outputBuffer, this.outputTexture, paddedOut);
           }
 
           this.anime4kPass.render(this.outputTexture, outputTargetView, dstW, dstH, {
@@ -181,6 +183,18 @@ export class UpscalerManager {
       }
     } catch (e) {
       console.warn('[FrameGen] ONNX inference fallback:', e);
+    } finally {
+      // Free VRAM tensors on each frame to prevent memory leaks
+      if (inputTensor && (inputTensor as any).dispose) {
+        try { (inputTensor as any).dispose(); } catch {}
+      }
+      if (results) {
+        for (const k of Object.keys(results)) {
+          if (results[k] && (results[k] as any).dispose) {
+            try { (results[k] as any).dispose(); } catch {}
+          }
+        }
+      }
     }
 
     // Fallback pass
