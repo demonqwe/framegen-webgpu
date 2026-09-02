@@ -1,0 +1,33 @@
+/**
+ * Global Configuration & Default Settings for FrameGen WebGPU
+ */
+
+export type OperationMode = 'hybrid' | 'generator_only' | 'upscale_only';
+export type Multiplier = 2 | 3 | 4;
+export type ScalerAlgorithm = 'fsr' | 'anime4k' | 'span' | 'compact' | 'bicubic' | 'off';
+
+export interface ExtensionSettings {
+  isEnabled: boolean;               // Global master toggle (default: false)
+  mode: OperationMode;              // Execution mode (default: 'hybrid')
+  multiplier: Multiplier;           // FPS multiplier: 2x (60fps), 3x (90fps), 4x (120fps)
+  scalerAlgorithm: ScalerAlgorithm; // Universal scaler algorithm for all resolutions (default: 'fsr')
+  autoBypassFps: number;            // Automatically bypass framegen if source FPS >= threshold (default: 60, 0 = disabled)
+  animeCadenceDetection: boolean;   // Smart anime duplicate frame skip & phase detection (default: true)
+  cadenceThreshold: number;         // L1 difference threshold for duplicate detection (default: 0.01)
+  fsrSharpness: number;             // FSR RCAS / CAS sharpness (0.0 to 1.0, default: 0.8)
+  showSideControls: boolean;        // Show left-edge quick access micro-switch (default: true)
+  showDebug: boolean;               // Show Shift+D HUD overlay (default: false)
+}
+
+export const DEFAULT_SETTINGS: ExtensionSettings = {
+  isEnabled: false,
+  mode: 'hybrid',
+  multiplier: 2,
+  scalerAlgorithm: 'fsr',
+  autoBypassFps: 60,
+  animeCadenceDetection: true,
+  cadenceThreshold: 0.01,
+  fsrSharpness: 0.8,
+  showSideControls: true,
+  showDebug: false
+};

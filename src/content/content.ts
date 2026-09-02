@@ -1,12 +1,8 @@
 import { initWebGPU, configureCanvas, GPUContextBundle } from '../webgpu/gpu-context';
-import { Anime4KPass } from '../webgpu/anime4k-pass';
 import { OverlayManager } from './overlay-manager';
-import { FrameScheduler, SchedulerOptions } from './frame-scheduler';
-
-interface ExtensionSettings extends SchedulerOptions {
-  showSideControls: boolean;
-  showDebug: boolean;
-}
+import { FrameScheduler } from './frame-scheduler';
+import { PipelineManager } from '../core/PipelineManager';
+import { ExtensionSettings, DEFAULT_SETTINGS } from '../config/defaults';
 
 function isExtensionValid(): boolean {
   try {
@@ -33,24 +29,19 @@ function safeStorageGet(keys: string[], cb: (res: any) => void): void {
 class ContentController {
   private overlayManager: OverlayManager;
   private gpuBundle: GPUContextBundle | null = null;
-  private anime4kPass: Anime4KPass | null = null;
+  private pipelineManager: PipelineManager | null = null;
   private scheduler: FrameScheduler | null = null;
   private currentVideo: HTMLVideoElement | null = null;
+
   private sidePillElement: HTMLElement | null = null;
   private debugHudElement: HTMLElement | null = null;
   private showDebugHud = false;
   private vsrBypass = false;
   private isAttaching = false;
+  private isTransitioning = false;
+  private pillFadeTimeout: number | null = null;
 
-  private settings: ExtensionSettings = {
-    enabled: true,
-    targetFpsMode: '60fps',
-    resolutionProfile: 'auto',
-    anime4kParams: { strength: 0.8, thinningThreshold: 0.05 },
-    autoDisableWhenNativeOrHigher: true,
-    showSideControls: true,
-    showDebug: false
-  };
+  private settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 
   constructor() {
     this.overlayManager = new OverlayManager();
@@ -66,9 +57,9 @@ class ContentController {
   }
 
   private async init(): Promise<void> {
-    console.log(`[Anime FrameGen] Active in frame: ${window.location.href}`);
+    console.log(`[FrameGen WebGPU] Active in frame: ${window.location.href}`);
 
-    // Load initial settings safely + per-domain VSR overrides
+    // 1. Load settings with default isEnabled: false
     safeStorageGet(['frameGenSettings', 'showDebug', 'siteVsrOverrides'], (result) => {
       if (result && result.frameGenSettings) {
         this.settings = { ...this.settings, ...result.frameGenSettings };
@@ -85,17 +76,20 @@ class ContentController {
       this.startVideoObservation();
     });
 
-    // Listen for settings and debug changes across all frames
+    // 2. Listen for settings changes across frames
     if (isExtensionValid() && chrome.storage && chrome.storage.onChanged) {
       try {
         chrome.storage.onChanged.addListener((changes, areaName) => {
           if (areaName === 'local') {
             if (changes.frameGenSettings) {
               this.settings = { ...this.settings, ...changes.frameGenSettings.newValue };
-              if (this.scheduler) {
-                this.scheduler.updateOptions(this.settings);
+              if (this.pipelineManager) {
+                this.pipelineManager.updateSettings(this.settings);
               }
-              if (!this.settings.enabled) {
+              if (this.scheduler) {
+                this.scheduler.updateSettings(this.settings);
+              }
+              if (!this.settings.isEnabled) {
                 this.disableFrameGen();
               } else if (this.currentVideo) {
                 if (!this.scheduler) {
@@ -117,22 +111,7 @@ class ContentController {
               const host = this.getHostName();
               if (overrides[host] !== undefined && overrides[host] !== this.vsrBypass) {
                 this.vsrBypass = overrides[host];
-                const overlay = this.overlayManager.getActiveState();
-                if (this.vsrBypass) {
-                  if (overlay && overlay.canvas) {
-                    overlay.canvas.style.opacity = '0';
-                    overlay.canvas.style.visibility = 'hidden';
-                  }
-                  if (this.scheduler) this.scheduler.stop();
-                } else {
-                  if (overlay && overlay.canvas) {
-                    overlay.canvas.style.opacity = '1';
-                    overlay.canvas.style.visibility = 'visible';
-                  }
-                  if (this.scheduler && this.settings.enabled && this.currentVideo && !this.currentVideo.paused) {
-                    this.scheduler.start();
-                  }
-                }
+                this.applyVsrBypassState();
                 this.updateSidePill();
                 this.updateDebugHud();
               }
@@ -142,14 +121,13 @@ class ContentController {
       } catch {}
     }
 
-    // Global capture of video events
+    // 3. Global video event listeners
     const handleGlobalVideoEvent = (e: Event) => {
       if (e.target instanceof HTMLVideoElement) {
         const v = e.target;
         const src = v.currentSrc || v.src || '';
         if (src.includes('blank.mp4')) return;
 
-        // Ignore small preview/sidebar videos
         const rect = v.getBoundingClientRect();
         if (rect.width < 200 || rect.height < 140) return;
 
@@ -177,25 +155,24 @@ class ContentController {
       }
     }, true);
 
-    // Direct message fallback
+    // Message fallback
     if (isExtensionValid() && chrome.runtime && chrome.runtime.onMessage) {
       try {
         chrome.runtime.onMessage.addListener(this.handleMessage);
       } catch {}
     }
 
-    // Handle tab visibility
+    // Tab visibility handler
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         if (this.scheduler) this.scheduler.stop();
       } else {
-        if (this.scheduler && this.currentVideo && !this.currentVideo.paused && this.settings.enabled && !this.vsrBypass) {
+        if (this.scheduler && this.currentVideo && !this.currentVideo.paused && this.settings.isEnabled && !this.vsrBypass) {
           this.scheduler.start();
         }
       }
     });
 
-    // Start telemetry broadcaster & live FPS ticker
     this.startTelemetryLoop();
   }
 
@@ -205,21 +182,40 @@ class ContentController {
     this.updateDebugHud();
   }
 
-  private toggleVsrBypass(): void {
-    this.vsrBypass = !this.vsrBypass;
-    const host = this.getHostName();
+  private async toggleVsrBypass(): Promise<void> {
+    if (this.isTransitioning) return;
+    this.isTransitioning = true;
 
-    // Persist per-site setting in storage
-    safeStorageGet(['siteVsrOverrides'], (res) => {
-      const overrides = res?.siteVsrOverrides || {};
-      overrides[host] = this.vsrBypass;
-      safeStorageSet({ siteVsrOverrides: overrides });
-    });
+    if (this.sidePillElement) {
+      this.sidePillElement.style.pointerEvents = 'none';
+    }
 
+    try {
+      this.vsrBypass = !this.vsrBypass;
+      const host = this.getHostName();
+
+      safeStorageGet(['siteVsrOverrides'], (res) => {
+        const overrides = res?.siteVsrOverrides || {};
+        overrides[host] = this.vsrBypass;
+        safeStorageSet({ siteVsrOverrides: overrides });
+      });
+
+      this.applyVsrBypassState();
+      this.updateSidePill();
+      this.updateDebugHud();
+    } finally {
+      setTimeout(() => {
+        this.isTransitioning = false;
+        if (this.sidePillElement) {
+          this.sidePillElement.style.pointerEvents = 'auto';
+        }
+      }, 200);
+    }
+  }
+
+  private applyVsrBypassState(): void {
     const overlay = this.overlayManager.getActiveState();
-
     if (this.vsrBypass) {
-      // Hide WebGPU overlay cleanly with opacity/visibility to keep canvas dimensions valid
       if (overlay && overlay.canvas) {
         overlay.canvas.style.opacity = '0';
         overlay.canvas.style.visibility = 'hidden';
@@ -228,7 +224,6 @@ class ContentController {
         this.scheduler.stop();
       }
     } else {
-      // Re-enable WebGPU overlay
       if (overlay && overlay.canvas) {
         overlay.canvas.style.opacity = '1';
         overlay.canvas.style.visibility = 'visible';
@@ -240,20 +235,17 @@ class ContentController {
           );
         }
       }
-      if (this.scheduler && this.settings.enabled && this.currentVideo && !this.currentVideo.paused) {
+      if (this.scheduler && this.settings.isEnabled && this.currentVideo && !this.currentVideo.paused) {
         this.scheduler.start();
       }
     }
-
-    this.updateSidePill();
-    this.updateDebugHud();
   }
 
   private startTelemetryLoop(): void {
     window.setInterval(() => {
       const isVisible = !document.hidden;
       const isPlaying = this.currentVideo ? !this.currentVideo.paused && !this.currentVideo.ended : false;
-      const hasActiveScheduler = !!(this.scheduler && this.settings.enabled && !this.vsrBypass);
+      const hasActiveScheduler = !!(this.scheduler && this.settings.isEnabled && !this.vsrBypass);
       const liveFps = this.scheduler ? this.scheduler.getFps() : 0;
       const sourceFps = this.scheduler ? this.scheduler.getSourceFps() : 24;
 
@@ -300,7 +292,6 @@ class ContentController {
   }
 
   private findAndAttachVideo(): void {
-    // 1. If currently attached video is valid, in DOM and not ended, keep it (prevents flickering)
     if (this.currentVideo && document.contains(this.currentVideo)) {
       const rect = this.currentVideo.getBoundingClientRect();
       if (rect.width > 200 && rect.height > 140) {
@@ -313,7 +304,6 @@ class ContentController {
     const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
     if (videos.length === 0) return;
 
-    // 2. YouTube specific: prefer .html5-main-video
     const ytMain = document.querySelector('video.html5-main-video') as HTMLVideoElement | null;
     if (ytMain && !ytMain.src?.includes('blank.mp4')) {
       const rect = ytMain.getBoundingClientRect();
@@ -325,7 +315,6 @@ class ContentController {
       }
     }
 
-    // 3. Shorts specific: prefer active reel video
     const activeShorts = document.querySelector('ytd-reel-video-renderer[is-active] video') as HTMLVideoElement | null;
     if (activeShorts) {
       if (this.currentVideo !== activeShorts) {
@@ -334,7 +323,6 @@ class ContentController {
       return;
     }
 
-    // 4. General search: pick the largest playing video (ignoring sidebar previews)
     let candidate: HTMLVideoElement | null = null;
     let maxArea = 0;
 
@@ -343,7 +331,7 @@ class ContentController {
       if (src.includes('blank.mp4')) continue;
 
       const rect = v.getBoundingClientRect();
-      if (rect.width < 200 || rect.height < 140) continue; // Ignore mini hover thumbnails/previews
+      if (rect.width < 200 || rect.height < 140) continue;
 
       const area = rect.width * rect.height;
 
@@ -382,10 +370,11 @@ class ContentController {
       if (!this.gpuBundle) return false;
     }
 
-    if (!this.anime4kPass) {
-      this.anime4kPass = new Anime4KPass(
+    if (!this.pipelineManager) {
+      this.pipelineManager = new PipelineManager(
         this.gpuBundle.device,
-        this.gpuBundle.presentationFormat
+        this.gpuBundle.presentationFormat,
+        this.settings
       );
     }
 
@@ -410,7 +399,7 @@ class ContentController {
       const overlay = this.overlayManager.attach(video);
 
       const success = await this.ensureWebGPU();
-      if (!success || !this.gpuBundle || !this.anime4kPass) {
+      if (!success || !this.gpuBundle || !this.pipelineManager) {
         this.isAttaching = false;
         return;
       }
@@ -428,7 +417,7 @@ class ContentController {
         overlay.canvas,
         gpuContext,
         this.gpuBundle.device,
-        this.anime4kPass,
+        this.pipelineManager,
         this.settings
       );
 
@@ -442,14 +431,14 @@ class ContentController {
         }
       });
 
-      if (this.settings.enabled && !this.vsrBypass) {
+      if (this.settings.isEnabled && !this.vsrBypass) {
         this.scheduler.start();
       }
 
       this.createOrUpdateSidePill(overlay.wrapper);
       this.updateSidePill();
     } catch (err) {
-      console.warn('[Anime FrameGen] attachToVideo error:', err);
+      console.warn('[FrameGen WebGPU] attachToVideo error:', err);
     } finally {
       this.isAttaching = false;
     }
@@ -476,10 +465,13 @@ class ContentController {
 
     if (message.type === 'UPDATE_SETTINGS') {
       this.settings = { ...this.settings, ...message.settings };
-      if (this.scheduler) {
-        this.scheduler.updateOptions(this.settings);
+      if (this.pipelineManager) {
+        this.pipelineManager.updateSettings(this.settings);
       }
-      if (!this.settings.enabled) {
+      if (this.scheduler) {
+        this.scheduler.updateSettings(this.settings);
+      }
+      if (!this.settings.isEnabled) {
         this.disableFrameGen();
       } else {
         this.enableFrameGen();
@@ -492,7 +484,7 @@ class ContentController {
     if (message.type === 'GET_STATUS') {
       sendResponse({
         hasVideo: !!this.currentVideo,
-        active: !!(this.scheduler && this.settings.enabled && !this.vsrBypass),
+        active: !!(this.scheduler && this.settings.isEnabled && !this.vsrBypass),
         fps: this.scheduler ? this.scheduler.getFps() : 0,
         sourceFps: this.scheduler ? this.scheduler.getSourceFps() : 24,
         siteHost: this.getHostName(),
@@ -502,7 +494,7 @@ class ContentController {
     }
   };
 
-  // Ultra-Minimalist Left Edge Micro-Switch
+  // Ultra-Minimalist Left Edge Micro-Switch with explicit ON/OFF tags and bounds check
   private createOrUpdateSidePill(wrapper: HTMLElement): void {
     if (!this.settings.showSideControls) {
       if (this.sidePillElement && this.sidePillElement.parentElement) {
@@ -514,7 +506,7 @@ class ContentController {
 
     if (!this.sidePillElement) {
       const container = document.createElement('div');
-      container.className = 'anime-framegen-side-container';
+      container.className = 'framegen-side-container';
       container.style.position = 'absolute';
       container.style.left = '0';
       container.style.top = '50%';
@@ -524,7 +516,7 @@ class ContentController {
       container.style.display = 'flex';
       container.style.alignItems = 'center';
 
-      // Edge hover sensor (leftmost 24px strip)
+      // Edge hover sensor
       const sensor = document.createElement('div');
       sensor.style.position = 'absolute';
       sensor.style.left = '0';
@@ -536,7 +528,7 @@ class ContentController {
 
       // Micro-Pill Switch (20px height)
       const pill = document.createElement('div');
-      pill.className = 'anime-framegen-micro-pill';
+      pill.className = 'framegen-micro-pill';
       pill.style.display = 'inline-flex';
       pill.style.alignItems = 'center';
       pill.style.gap = '5px';
@@ -559,7 +551,7 @@ class ContentController {
       pill.style.pointerEvents = 'none';
       pill.style.transform = 'translateX(-12px)';
       pill.style.transition = 'transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, border-color 0.2s ease';
-      pill.title = 'Клик: Генератор 60 FPS ↔ Натив c VSR | Shift+D: Мониторинг';
+      pill.title = 'Клик: Генератор (ON) ↔ Натив c VSR (OFF) | Shift+D: Мониторинг';
 
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -570,30 +562,48 @@ class ContentController {
       container.appendChild(sensor);
       container.appendChild(pill);
 
-      // Smooth Edge Hover Logic
-      let hideTimer: number | null = null;
+      // Smooth Edge Hover Logic & 2.5s Auto-Fadeout
       const showPill = () => {
-        if (hideTimer) clearTimeout(hideTimer);
+        if (this.pillFadeTimeout) clearTimeout(this.pillFadeTimeout);
         pill.style.transform = 'translateX(0)';
         pill.style.opacity = '1';
         pill.style.pointerEvents = 'auto';
+
+        this.pillFadeTimeout = window.setTimeout(() => {
+          hidePill();
+        }, 2500);
       };
+
       const hidePill = () => {
-        hideTimer = window.setTimeout(() => {
-          pill.style.transform = 'translateX(-12px)';
-          pill.style.opacity = '0';
-          pill.style.pointerEvents = 'none';
-        }, 700);
+        pill.style.transform = 'translateX(-12px)';
+        pill.style.opacity = '0';
+        pill.style.pointerEvents = 'none';
       };
 
       sensor.addEventListener('mouseenter', showPill);
       pill.addEventListener('mouseenter', showPill);
-      container.addEventListener('mouseleave', hidePill);
+      container.addEventListener('mouseleave', () => {
+        if (this.pillFadeTimeout) clearTimeout(this.pillFadeTimeout);
+        this.pillFadeTimeout = window.setTimeout(hidePill, 600);
+      });
 
-      // Global capture mousemove to ensure edge hover works on YouTube
+      // Global capture mousemove with strict bounds check
       const onGlobalMouseMove = (e: MouseEvent) => {
         if (!this.settings.showSideControls || !this.currentVideo) return;
         const rect = this.currentVideo.getBoundingClientRect();
+
+        const inPlayerBounds =
+          e.clientX >= rect.left &&
+          e.clientX <= rect.right &&
+          e.clientY >= rect.top &&
+          e.clientY <= rect.bottom;
+
+        if (!inPlayerBounds) {
+          hidePill();
+          return;
+        }
+
+        // Trigger near left edge (within 28px)
         if (
           e.clientX >= rect.left &&
           e.clientX <= rect.left + 28 &&
@@ -626,22 +636,25 @@ class ContentController {
 
     if (!this.sidePillElement) return;
 
-    const pill = this.sidePillElement.querySelector('.anime-framegen-micro-pill') as HTMLElement;
+    const pill = this.sidePillElement.querySelector('.framegen-micro-pill') as HTMLElement;
     if (!pill) return;
 
-    if (this.vsrBypass) {
-      // VSR Native State
-      pill.style.borderColor = 'rgba(34, 197, 94, 0.4)';
-      pill.innerHTML = `
-        <span style="width: 5px; height: 5px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
-        <span style="color: #4ade80;">VSR (Натив)</span>
-      `;
-    } else {
-      // Active FrameGen 60 FPS State
+    const isGenOn = this.settings.isEnabled && !this.vsrBypass;
+
+    if (isGenOn) {
+      // Active FrameGen State
+      const fpsText = this.settings.multiplier === 4 ? '120 FPS' : (this.settings.multiplier === 3 ? '90 FPS' : '60 FPS');
       pill.style.borderColor = 'rgba(56, 189, 248, 0.4)';
       pill.innerHTML = `
         <span style="width: 5px; height: 5px; border-radius: 50%; background: #38bdf8; display: inline-block;"></span>
-        <span>60 FPS</span>
+        <span>ON [${fpsText}]</span>
+      `;
+    } else {
+      // VSR / Native OFF State
+      pill.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+      pill.innerHTML = `
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
+        <span style="color: #4ade80;">OFF [VSR Натив]</span>
       `;
     }
   }
@@ -660,7 +673,7 @@ class ContentController {
 
     if (!this.debugHudElement) {
       this.debugHudElement = document.createElement('div');
-      this.debugHudElement.className = 'anime-framegen-hud';
+      this.debugHudElement.className = 'framegen-hud';
       this.debugHudElement.style.position = 'absolute';
       this.debugHudElement.style.top = '12px';
       this.debugHudElement.style.left = '12px';
@@ -675,7 +688,7 @@ class ContentController {
       this.debugHudElement.style.zIndex = '2147483646';
       this.debugHudElement.style.pointerEvents = 'auto';
       this.debugHudElement.style.boxShadow = '0 6px 20px rgba(0, 0, 0, 0.7)';
-      this.debugHudElement.style.minWidth = '240px';
+      this.debugHudElement.style.minWidth = '250px';
       overlay.wrapper.appendChild(this.debugHudElement);
     }
 
@@ -691,31 +704,29 @@ class ContentController {
       fpsText = '<span style="color:#94a3b8;">0 FPS (Пауза)</span>';
     } else if (this.vsrBypass) {
       fpsText = `<span style="color:#4ade80;">${sourceFps} FPS (VSR Исходник)</span>`;
-    } else if (this.settings.enabled) {
+    } else if (this.settings.isEnabled) {
       fpsText = `<span style="color:#38bdf8;font-weight:700;">${sourceFps} FPS → ${liveFps || 60} FPS</span>`;
     } else {
       fpsText = `<span style="color:#94a3b8;">${sourceFps} FPS (Нативный)</span>`;
     }
 
-    const mode = this.settings.anime4kParams?.scalerMode || 'anime4k';
-    let modeName = 'Anime4K v4.0';
-    if (mode === 'fsr') modeName = 'AMD FSR';
-    else if (mode === 'bicubic') modeName = 'Bicubic Catmull-Rom';
-    else if (mode === 'off') modeName = 'Выкл (1:1)';
-
-    const strengthPct = Math.round((this.settings.anime4kParams?.strength ?? 0.8) * 100);
-    const scaleLabel = this.vsrBypass
-      ? '<span style="color:#4ade80;">Нативный вывод (VSR)</span>'
-      : ((mode === 'off' || strengthPct === 0)
-          ? '<span style="color:#94a3b8;">Выкл</span>'
-          : `<span style="color:#38bdf8;">${modeName} (${strengthPct}%)</span>`);
+    let upscalerText = 'AMD FSR 1.0';
+    switch (this.settings.scalerAlgorithm) {
+      case 'anime4k': upscalerText = 'Anime4K v4.0 (Line Thinning)'; break;
+      case 'span': upscalerText = 'SPAN x2 (FP16)'; break;
+      case 'compact': upscalerText = 'Real-ESRGAN Compact x2'; break;
+      case 'bicubic': upscalerText = 'Bicubic Catmull-Rom'; break;
+      case 'off': upscalerText = 'Выкл (1:1)'; break;
+      case 'fsr': default: upscalerText = 'AMD FSR 1.0 (EASU+RCAS)'; break;
+    }
 
     this.debugHudElement.innerHTML = `
       <div style="font-weight:600;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:4px;color:#f8fafc;display:flex;justify-content:space-between;">
-        <span>Мониторинг видео</span>
+        <span>Мониторинг WebGPU</span>
         ${fpsText}
       </div>
-      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Масштаб:</span>${scaleLabel}</div>
+      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Режим:</span><span style="color:#38bdf8;">${this.settings.mode} (${this.settings.multiplier}×)</span></div>
+      <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Апскейлер:</span><span style="color:#f1f5f9;">${upscalerText}</span></div>
       <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Видеопоток:</span><span style="color:#f1f5f9;">${vRes} (${vStatus})</span></div>
       <div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Вывод экрана:</span><span style="color:#f1f5f9;">${outRes}</span></div>
       <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">Shift+D — скрыть</div>
