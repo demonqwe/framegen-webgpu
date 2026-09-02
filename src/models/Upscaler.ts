@@ -14,6 +14,8 @@ export class UpscalerManager {
   private compactSession: ort.InferenceSession | null = null;
   private compact4kSession: ort.InferenceSession | null = null;
   private isInitializing = false;
+  private isInferencing = false;
+  private hasCompletedInference = false;
 
   // Intermediate GPU Buffers for ONNX NHWC execution
   private inputBuffer: GPUBuffer | null = null;
@@ -110,7 +112,7 @@ export class UpscalerManager {
   }
 
   /**
-   * Runs actual ONNX model inference on WebGPU in native NHWC format with strict memory management.
+   * Runs actual ONNX model inference on WebGPU with mutex lock and non-blocking display.
    */
   public async renderWithOnnx(
     srcTexture: GPUTexture,
@@ -123,10 +125,26 @@ export class UpscalerManager {
   ): Promise<boolean> {
     const activeSession = (this.currentMode === 'span' ? this.spanSession : (targetWidth > 2560 ? this.compact4kSession : this.compactSession));
     if (!activeSession) {
-      this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness);
+      this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
       return false;
     }
 
+    // Mutex guard: ONNX sessions are NOT reentrant. If a frame inference is currently in-flight,
+    // render the latest completed texture or pass-through immediately to prevent black screen & "Session already started" error.
+    if (this.isInferencing) {
+      if (this.hasCompletedInference && this.outputTexture) {
+        this.anime4kPass.render(this.outputTexture, outputTargetView, targetWidth, targetHeight, {
+          strength: sharpness,
+          thinningThreshold: 0.05,
+          scalerMode: 'off'
+        });
+        return true;
+      }
+      this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
+      return false;
+    }
+
+    this.isInferencing = true;
     let inputTensor: ort.Tensor | null = null;
     let results: Record<string, ort.Tensor> | null = null;
 
@@ -138,7 +156,7 @@ export class UpscalerManager {
       this.ensureBuffers(paddedIn.paddedWidth, paddedIn.paddedHeight, paddedOut.paddedWidth, paddedOut.paddedHeight);
 
       if (!this.inputBuffer || !this.outputBuffer || !this.outputTexture) {
-        this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness);
+        this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
         return false;
       }
 
@@ -173,6 +191,7 @@ export class UpscalerManager {
             this.converter.convertNHWCToTexture(this.outputBuffer, this.outputTexture, paddedOut);
           }
 
+          this.hasCompletedInference = true;
           this.anime4kPass.render(this.outputTexture, outputTargetView, dstW, dstH, {
             strength: sharpness,
             thinningThreshold: 0.05,
@@ -184,6 +203,7 @@ export class UpscalerManager {
     } catch (e) {
       console.warn('[FrameGen] ONNX inference fallback:', e);
     } finally {
+      this.isInferencing = false;
       // Free VRAM tensors on each frame to prevent memory leaks
       if (inputTensor && (inputTensor as any).dispose) {
         try { (inputTensor as any).dispose(); } catch {}
@@ -197,8 +217,8 @@ export class UpscalerManager {
       }
     }
 
-    // Fallback pass
-    this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness);
+    // Fallback pass (never black screen)
+    this.render(srcTexture, outputTargetView, targetWidth, targetHeight, sharpness, srcWidth, srcHeight);
     return false;
   }
 
@@ -210,7 +230,9 @@ export class UpscalerManager {
     outputTargetView: GPUTextureView,
     targetWidth: number,
     targetHeight: number,
-    sharpness = 0.8
+    sharpness = 0.8,
+    srcWidth?: number,
+    srcHeight?: number
   ): void {
     let passMode: 'anime4k' | 'fsr' | 'bicubic' | 'off' = 'fsr';
 
@@ -232,11 +254,14 @@ export class UpscalerManager {
         break;
     }
 
+    const inW = srcWidth || srcTexture.width || targetWidth;
+    const inH = srcHeight || srcTexture.height || targetHeight;
+
     this.anime4kPass.render(
       srcTexture,
       outputTargetView,
-      targetWidth,
-      targetHeight,
+      inW,
+      inH,
       {
         strength: sharpness,
         thinningThreshold: 0.05,
