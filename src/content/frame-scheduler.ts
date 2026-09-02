@@ -37,6 +37,10 @@ export class FrameScheduler {
   private isVideoIntersecting = true;
   private intersectionObserver: IntersectionObserver | null = null;
 
+  // GPU concurrency mutex: prevents overlapping command submissions and texture race conditions
+  private isGpuRendering = false;
+  private activeRenderPromise: Promise<void> | null = null;
+
   private settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 
   constructor(
@@ -147,6 +151,8 @@ export class FrameScheduler {
     this.lastPresentedTime = 0;
     this.hasCapturedAnyT0 = false;
     this.currentFps = 0;
+    this.isGpuRendering = false;
+    this.activeRenderPromise = null;
     this.clearTimers();
   }
 
@@ -297,6 +303,14 @@ export class FrameScheduler {
     // 3. Anime duplicate frame check
     const cadenceResult = await this.pipelineManager.evaluateCadence(this.texCapture, currentMediaTime, now);
 
+    // CRITICAL MUTEX: Await in-flight subframe rendering before rotating textures.
+    // Prevents writing to texCapture while interpolation reads from oldPrev/texPrev!
+    if (this.activeRenderPromise) {
+      try {
+        await this.activeRenderPromise;
+      } catch {}
+    }
+
     // 4. Rotate textures in triple buffer
     const oldPrev = this.texPrev;
     this.texPrev = this.texCurr;
@@ -319,7 +333,8 @@ export class FrameScheduler {
     const shouldInterpolate = !this.isCompareMode && this.settings.mode !== 'upscale_only' && !isHighFpsSource && !cadenceResult.isDuplicate && this.hasCapturedAnyT0 && !!this.texPrev && !!this.texCurr;
 
     if (shouldInterpolate) {
-      const durationMs = (deltaT > 0.005 && deltaT < 0.2) ? deltaT * 1000 : this.intervalMs;
+      // Use PLL-smoothed intervalMs clamped to [16ms .. 100ms] to eliminate sudden drops to 24 FPS
+      const durationMs = (deltaT > 0.015 && deltaT < 0.1) ? deltaT * 1000 : this.intervalMs;
       this.scheduleSubframes(durationMs, videoWidth, videoHeight, this.texPrev!, this.texCurr!);
     }
 
@@ -362,12 +377,14 @@ export class FrameScheduler {
   ): void {
     this.clearTimers();
     const steps = this.pipelineManager.getInterpolationSteps(this.sourceFps);
+    const stableDuration = Math.min(100, Math.max(16, frameDurationMs));
 
     for (const step of steps) {
-      const delay = Math.max(4, Math.round(frameDurationMs * step));
-      const timer = window.setTimeout(async () => {
+      const delay = Math.max(4, Math.round(stableDuration * step));
+      const timer = window.setTimeout(() => {
         if (!this.isRunning || this.video.paused) return;
-        await this.renderInterpolated(t0Texture, t1Texture, step, width, height);
+        if (this.isGpuRendering) return; // Drop subframe if GPU is busy to avoid queue buildup
+        this.renderInterpolated(t0Texture, t1Texture, step, width, height);
       }, delay);
       this.intermediateTimers.push(timer);
     }
@@ -375,97 +392,116 @@ export class FrameScheduler {
 
   private renderLatencyMs = 0;
 
-  private async renderInterpolated(
+  private renderInterpolated(
     t0Texture: GPUTexture,
     t1Texture: GPUTexture,
     stepT: number,
     srcWidth: number,
     srcHeight: number
-  ): Promise<void> {
-    const t0 = performance.now();
-    try {
-      const currentTarget = this.gpuContext.getCurrentTexture();
-      const targetView = currentTarget.createView();
-      const targetWidth = this.canvas.width || srcWidth;
-      const targetHeight = this.canvas.height || srcHeight;
+  ): void {
+    if (this.isGpuRendering || !this.isRunning || this.video.paused) return;
+    this.isGpuRendering = true;
 
-      const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Interpolate' });
-
-      // Run real motion estimation + bidirectional warp + upscaling
-      await this.pipelineManager.generateInterpolatedFrame(
-        commandEncoder,
-        t0Texture,
-        t1Texture,
-        stepT,
-        targetView,
-        srcWidth,
-        srcHeight,
-        targetWidth,
-        targetHeight
-      );
-
-      this.device.queue.submit([commandEncoder.finish()]);
-
-      const t1 = performance.now();
-      const frameCost = t1 - t0;
-      this.renderLatencyMs = Math.round((this.renderLatencyMs * 0.8 + frameCost * 0.2) * 10) / 10;
-
-      this.frameCount++;
-      const now = performance.now();
-      const elapsed = now - this.lastFpsUpdate;
-      if (elapsed >= 500) {
-        this.currentFps = Math.round((this.frameCount * 1000) / elapsed);
-        this.frameCount = 0;
-        this.lastFpsUpdate = now;
-      }
-    } catch (e) {
-      console.error('[FrameGen] Interpolation error, fallback to base frame:', e);
+    this.activeRenderPromise = (async () => {
+      const t0 = performance.now();
       try {
-        await this.renderFrame(t1Texture, srcWidth, srcHeight);
-      } catch {
-        // Fallback suppressed
+        const currentTarget = this.gpuContext.getCurrentTexture();
+        if (!currentTarget) return;
+        const targetView = currentTarget.createView();
+        const targetWidth = this.canvas.width || srcWidth;
+        const targetHeight = this.canvas.height || srcHeight;
+
+        const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Interpolate' });
+
+        // Run real motion estimation + bidirectional warp + upscaling
+        await this.pipelineManager.generateInterpolatedFrame(
+          commandEncoder,
+          t0Texture,
+          t1Texture,
+          stepT,
+          targetView,
+          srcWidth,
+          srcHeight,
+          targetWidth,
+          targetHeight
+        );
+
+        this.device.queue.submit([commandEncoder.finish()]);
+
+        const t1 = performance.now();
+        const frameCost = t1 - t0;
+        this.renderLatencyMs = Math.round((this.renderLatencyMs * 0.8 + frameCost * 0.2) * 10) / 10;
+
+        this.frameCount++;
+        const now = performance.now();
+        const elapsed = now - this.lastFpsUpdate;
+        if (elapsed >= 500) {
+          this.currentFps = Math.round((this.frameCount * 1000) / elapsed);
+          this.frameCount = 0;
+          this.lastFpsUpdate = now;
+        }
+      } catch (e) {
+        console.warn('[FrameGen] Interpolation error:', e);
+      } finally {
+        this.isGpuRendering = false;
+        this.activeRenderPromise = null;
       }
-    }
+    })();
   }
 
   private async renderFrame(texture: GPUTexture, srcWidth: number, srcHeight: number): Promise<void> {
-    const t0 = performance.now();
-    try {
-      const currentTarget = this.gpuContext.getCurrentTexture();
-      const targetView = currentTarget.createView();
-      const targetWidth = this.canvas.width || srcWidth;
-      const targetHeight = this.canvas.height || srcHeight;
-
-      const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Render' });
-
-      // Run pipeline upscaling
-      await this.pipelineManager.upscaleFrame(
-        commandEncoder,
-        texture,
-        targetView,
-        srcWidth,
-        srcHeight,
-        targetWidth,
-        targetHeight
-      );
-
-      this.device.queue.submit([commandEncoder.finish()]);
-
-      const t1 = performance.now();
-      const frameCost = t1 - t0;
-      this.renderLatencyMs = Math.round((this.renderLatencyMs * 0.8 + frameCost * 0.2) * 10) / 10;
-
-      this.frameCount++;
-      const now = performance.now();
-      const elapsed = now - this.lastFpsUpdate;
-      if (elapsed >= 500) {
-        this.currentFps = Math.round((this.frameCount * 1000) / elapsed);
-        this.frameCount = 0;
-        this.lastFpsUpdate = now;
-      }
-    } catch (e) {
-      console.warn('[FrameGen] Render error:', e);
+    if (this.isGpuRendering && this.activeRenderPromise) {
+      try {
+        await this.activeRenderPromise;
+      } catch {}
     }
+
+    this.isGpuRendering = true;
+    this.activeRenderPromise = (async () => {
+      const t0 = performance.now();
+      try {
+        const currentTarget = this.gpuContext.getCurrentTexture();
+        if (!currentTarget) return;
+        const targetView = currentTarget.createView();
+        const targetWidth = this.canvas.width || srcWidth;
+        const targetHeight = this.canvas.height || srcHeight;
+
+        const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Render' });
+
+        // Run pipeline upscaling
+        await this.pipelineManager.upscaleFrame(
+          commandEncoder,
+          texture,
+          targetView,
+          srcWidth,
+          srcHeight,
+          targetWidth,
+          targetHeight
+        );
+
+        this.device.queue.submit([commandEncoder.finish()]);
+
+        const t1 = performance.now();
+        const frameCost = t1 - t0;
+        this.renderLatencyMs = Math.round((this.renderLatencyMs * 0.8 + frameCost * 0.2) * 10) / 10;
+
+        this.frameCount++;
+        const now = performance.now();
+        const elapsed = now - this.lastFpsUpdate;
+        if (elapsed >= 500) {
+          this.currentFps = Math.round((this.frameCount * 1000) / elapsed);
+          this.frameCount = 0;
+          this.lastFpsUpdate = now;
+        }
+      } catch (e) {
+        console.warn('[FrameGen] Render error:', e);
+      } finally {
+        this.isGpuRendering = false;
+        this.activeRenderPromise = null;
+      }
+    })();
+
+    await this.activeRenderPromise;
   }
 
   public getFps(): number {
