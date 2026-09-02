@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   framegenEngine: 'neural',
   neuralModel: 'v7s',
   neuralResolution: 'native',
-  multiplierMode: 'fixed',
+  multiplierMode: 'target_fps',
   multiplier: 2,
   targetFps: 60,
   targetResolution: '1440p',

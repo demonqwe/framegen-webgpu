@@ -243,8 +243,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (activeTabId) {
       chrome.tabs.sendMessage(activeTabId, {
         type: 'SETTINGS_UPDATED',
-        settings: updatedSettings,
-        domain: currentDomain
+        settings: updatedSettings
       }).catch(() => {});
     }
   }
@@ -281,6 +280,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     neuralModelSelect.value = 'tfact2';
     neuralResolutionSelect.value = 'native';
     scalerSelect.value = 'anime4k';
+    multiplierModeSelect.value = 'target_fps';
+    updateMultiplierModeVisibility('target_fps');
     animeCadenceDetection.checked = true;
     updateEngineVisibility('neural');
     saveAndApplySettings();
@@ -293,6 +294,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     neuralModelSelect.value = 'v7s';
     neuralResolutionSelect.value = 'native';
     scalerSelect.value = 'fsr';
+    multiplierModeSelect.value = 'target_fps';
+    updateMultiplierModeVisibility('target_fps');
     animeCadenceDetection.checked = false;
     updateEngineVisibility('neural');
     saveAndApplySettings();
@@ -305,6 +308,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     neuralModelSelect.value = 'v7s';
     neuralResolutionSelect.value = '720p';
     scalerSelect.value = 'fsr';
+    multiplierModeSelect.value = 'target_fps';
+    updateMultiplierModeVisibility('target_fps');
     animeCadenceDetection.checked = true;
     updateEngineVisibility('neural');
     saveAndApplySettings();
@@ -320,7 +325,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     saveAndApplySettings();
   });
   multiplierSelect.addEventListener('change', saveAndApplySettings);
-  targetFpsSelect.addEventListener('change', saveAndApplySettings);
+  targetFpsSelect.addEventListener('change', () => {
+    multiplierModeSelect.value = 'target_fps';
+    updateMultiplierModeVisibility('target_fps');
+    saveAndApplySettings();
+  });
   autoBypassFpsInput.addEventListener('input', saveAndApplySettings);
   animeCadenceDetection.addEventListener('change', saveAndApplySettings);
   showSideControls.addEventListener('change', saveAndApplySettings);

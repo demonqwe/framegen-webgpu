@@ -100,21 +100,12 @@
       <div class="control-row">
         <label for="multiplierModeSelect" class="dim" id="t_frequencyTypeLabel">Тип частоты</label>
         <select id="multiplierModeSelect" class="select-box">
-          <option value="fixed" id="t_fixedMultiplier">Фиксированный множитель</option>
           <option value="target_fps" id="t_floatingMultiplier">Плавающий (Целевой FPS)</option>
+          <option value="fixed" id="t_fixedMultiplier">Фиксированный множитель</option>
         </select>
       </div>
 
-      <div class="control-row" id="fixedMultiplierRow">
-        <label for="multiplierSelect" class="dim" id="t_multiplierLabel">Множитель</label>
-        <select id="multiplierSelect" class="select-box">
-          <option value="2">x2</option>
-          <option value="3">x3</option>
-          <option value="4">x4</option>
-        </select>
-      </div>
-
-      <div class="control-row" id="targetFpsRow" style="display: none;">
+      <div class="control-row" id="targetFpsRow">
         <label for="targetFpsSelect" class="dim" id="t_targetFpsLabel">Целевой FPS</label>
         <select id="targetFpsSelect" class="select-box">
           <option value="60">60 FPS</option>
@@ -124,6 +115,15 @@
           <option value="144">144 FPS</option>
           <option value="165">165 FPS</option>
           <option value="240">240 FPS</option>
+        </select>
+      </div>
+
+      <div class="control-row" id="fixedMultiplierRow" style="display: none;">
+        <label for="multiplierSelect" class="dim" id="t_multiplierLabel">Множитель</label>
+        <select id="multiplierSelect" class="select-box">
+          <option value="2">x2</option>
+          <option value="3">x3</option>
+          <option value="4">x4</option>
         </select>
       </div>
 
@@ -160,7 +160,7 @@
 
     <footer class="footer" style="display: flex; justify-content: space-between; align-items: center; color: #64748b; font-size: 10px; padding-top: 4px;">
       <span id="t_footerHint">G: Вкл/Выкл • C: Сравнение • Shift+D: HUD</span>
-      <span style="color: #475569;">v1.1.1</span>
+      <span style="color: #475569;">v1.1.2</span>
     </footer>
   </div>
 

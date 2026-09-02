@@ -94,6 +94,8 @@ class ContentController {
               const newProfiles = changes.siteProfiles.newValue || {};
               if (newProfiles[currentHost]) {
                 this.applyUpdatedSettings(newProfiles[currentHost]);
+              } else if (changes.frameGenSettings) {
+                this.applyUpdatedSettings(changes.frameGenSettings.newValue);
               }
             } else if (changes.globalSettings) {
               safeStorageGet(['siteProfiles'], (res) => {
@@ -103,12 +105,7 @@ class ContentController {
                 }
               });
             } else if (changes.frameGenSettings) {
-              safeStorageGet(['siteProfiles'], (res) => {
-                const profiles = res?.siteProfiles || {};
-                if (!profiles[currentHost]) {
-                  this.applyUpdatedSettings(changes.frameGenSettings.newValue);
-                }
-              });
+              this.applyUpdatedSettings(changes.frameGenSettings.newValue);
             }
 
             if (changes.showDebug !== undefined) {
@@ -482,12 +479,9 @@ class ContentController {
     if (!message || !message.type) return;
 
     if (message.type === 'SETTINGS_UPDATED' || message.type === 'UPDATE_SETTINGS') {
-      const host = this.getHostName();
-      if (!message.domain || message.domain === host || message.domain === 'global') {
-        this.applyUpdatedSettings(message.settings);
-        sendResponse({ success: true });
-        return;
-      }
+      this.applyUpdatedSettings(message.settings);
+      sendResponse({ success: true });
+      return;
     }
 
     if (message.type === 'GET_STATUS') {
