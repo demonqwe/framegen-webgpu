@@ -4,14 +4,17 @@
 
 export type OperationMode = 'hybrid' | 'generator_only' | 'upscale_only';
 export type Multiplier = 2 | 3 | 4;
+export type MultiplierMode = 'fixed' | 'target_fps';
 export type ScalerAlgorithm = 'fsr' | 'anime4k' | 'span' | 'compact' | 'bicubic' | 'off';
 
 export interface ExtensionSettings {
   isEnabled: boolean;               // Global master toggle (default: false)
   mode: OperationMode;              // Execution mode (default: 'hybrid')
-  multiplier: Multiplier;           // FPS multiplier: 2x (60fps), 3x (90fps), 4x (120fps)
+  multiplierMode: MultiplierMode;   // 'fixed' (x2, x3, x4) | 'target_fps' (adaptive floating multiplier)
+  multiplier: Multiplier;           // Fixed multiplier: 2, 3, 4 (default: 2)
+  targetFps: number;                // Target FPS for floating multiplier (e.g. 60, 75, 120, 144, 240, default: 60)
   scalerAlgorithm: ScalerAlgorithm; // Universal scaler algorithm for all resolutions (default: 'fsr')
-  autoBypassFps: number;            // Automatically bypass framegen if source FPS >= threshold (default: 60, 0 = disabled)
+  autoBypassFps: number;            // Automatically bypass framegen if source FPS >= threshold (number, default: 60, 0 = disabled)
   animeCadenceDetection: boolean;   // Smart anime duplicate frame skip & phase detection (default: true)
   cadenceThreshold: number;         // L1 difference threshold for duplicate detection (default: 0.01)
   fsrSharpness: number;             // FSR RCAS / CAS sharpness (0.0 to 1.0, default: 0.8)
@@ -22,7 +25,9 @@ export interface ExtensionSettings {
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   isEnabled: false,
   mode: 'hybrid',
+  multiplierMode: 'fixed',
   multiplier: 2,
+  targetFps: 60,
   scalerAlgorithm: 'fsr',
   autoBypassFps: 60,
   animeCadenceDetection: true,

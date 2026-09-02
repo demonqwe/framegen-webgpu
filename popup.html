@@ -11,7 +11,7 @@
     <header class="header">
       <div class="brand">
         <span class="brand-title">FrameGen WebGPU</span>
-        <span class="brand-sub">60-120 FPS & 1440p Scaler</span>
+        <span class="brand-sub">60-240 FPS & 1440p Scaler</span>
       </div>
       <label class="switch">
         <input type="checkbox" id="masterToggle">
@@ -58,23 +58,41 @@
       </div>
 
       <div class="control-row">
-        <label for="multiplierSelect" class="dim">Множитель частоты</label>
+        <label for="multiplierModeSelect" class="dim">Тип частоты</label>
+        <select id="multiplierModeSelect" class="select-box">
+          <option value="fixed">Фиксированный множитель</option>
+          <option value="target_fps">Плавающий множитель (Целевой FPS)</option>
+        </select>
+      </div>
+
+      <div class="control-row" id="fixedMultiplierRow">
+        <label for="multiplierSelect" class="dim">Множитель</label>
         <select id="multiplierSelect" class="select-box">
-          <option value="2">2× (Плавные 60 FPS)</option>
-          <option value="3">3× (Ультра 90 FPS)</option>
-          <option value="4">4× (Максимальные 120 FPS)</option>
+          <option value="2">x2</option>
+          <option value="3">x3</option>
+          <option value="4">x4</option>
+        </select>
+      </div>
+
+      <div class="control-row" id="targetFpsRow" style="display: none;">
+        <label for="targetFpsSelect" class="dim">Целевой FPS</label>
+        <select id="targetFpsSelect" class="select-box">
+          <option value="60">60 FPS</option>
+          <option value="75">75 FPS</option>
+          <option value="90">90 FPS</option>
+          <option value="120">120 FPS</option>
+          <option value="144">144 FPS</option>
+          <option value="165">165 FPS</option>
+          <option value="240">240 FPS</option>
         </select>
       </div>
 
       <div class="control-row">
-        <label for="autoBypassSelect" class="dim">Авто-пропуск кадров</label>
-        <select id="autoBypassSelect" class="select-box">
-          <option value="60">При входных ≥ 60 FPS (YouTube 60fps)</option>
-          <option value="50">При входных ≥ 50 FPS (ТВ трансляции)</option>
-          <option value="48">При входных ≥ 48 FPS (HFR кино)</option>
-          <option value="30">При входных ≥ 30 FPS</option>
-          <option value="0">Отключить (Генерировать всегда)</option>
-        </select>
+        <label for="autoBypassFpsInput" class="dim">Авто-пропуск от (FPS)</label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <input type="number" id="autoBypassFpsInput" min="0" max="240" step="1" value="60" class="select-box" style="width: 70px; text-align: center; padding: 4px 6px;">
+          <span style="font-size: 10px; color: #64748b;">FPS (0=Выкл)</span>
+        </div>
       </div>
 
       <div class="control-row-col">
