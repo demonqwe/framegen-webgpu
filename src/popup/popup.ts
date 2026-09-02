@@ -2,7 +2,7 @@
  * Popup Controller: Manages settings, telemetry, and pipeline configuration.
  */
 
-import { ExtensionSettings, DEFAULT_SETTINGS, OperationMode, Multiplier, ScalerAlgorithm } from '../config/defaults';
+import { ExtensionSettings, DEFAULT_SETTINGS, OperationMode, Multiplier, MultiplierMode, ScalerAlgorithm } from '../config/defaults';
 
 document.addEventListener('DOMContentLoaded', async () => {
   const masterToggle = document.getElementById('masterToggle') as HTMLInputElement;
@@ -11,8 +11,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const videoRes = document.getElementById('videoRes') as HTMLElement;
 
   const scalerSelect = document.getElementById('scalerSelect') as HTMLSelectElement;
+  const multiplierModeSelect = document.getElementById('multiplierModeSelect') as HTMLSelectElement;
   const multiplierSelect = document.getElementById('multiplierSelect') as HTMLSelectElement;
-  const autoBypassSelect = document.getElementById('autoBypassSelect') as HTMLSelectElement;
+  const targetFpsSelect = document.getElementById('targetFpsSelect') as HTMLSelectElement;
+  const fixedMultiplierRow = document.getElementById('fixedMultiplierRow') as HTMLElement;
+  const targetFpsRow = document.getElementById('targetFpsRow') as HTMLElement;
+
+  const autoBypassFpsInput = document.getElementById('autoBypassFpsInput') as HTMLInputElement;
   const fsrSharpness = document.getElementById('fsrSharpness') as HTMLInputElement;
   const sharpnessValue = document.getElementById('sharpnessValue') as HTMLElement;
   const animeCadenceDetection = document.getElementById('animeCadenceDetection') as HTMLInputElement;
@@ -30,6 +35,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         btn.classList.remove('active');
       }
     });
+  }
+
+  function updateMultiplierModeVisibility(mode: MultiplierMode) {
+    if (mode === 'target_fps') {
+      fixedMultiplierRow.style.display = 'none';
+      targetFpsRow.style.display = 'flex';
+    } else {
+      fixedMultiplierRow.style.display = 'flex';
+      targetFpsRow.style.display = 'none';
+    }
   }
 
   function applyStatus(status: any) {
@@ -67,13 +82,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     masterToggle.checked = s.isEnabled ?? false;
     scalerSelect.value = s.scalerAlgorithm ?? 'fsr';
+    multiplierModeSelect.value = s.multiplierMode ?? 'fixed';
     multiplierSelect.value = String(s.multiplier ?? 2);
-    autoBypassSelect.value = String(s.autoBypassFps ?? 60);
+    targetFpsSelect.value = String(s.targetFps ?? 60);
+    autoBypassFpsInput.value = String(s.autoBypassFps ?? 60);
     fsrSharpness.value = String(s.fsrSharpness ?? 0.8);
     sharpnessValue.textContent = `${Math.round((s.fsrSharpness ?? 0.8) * 100)}%`;
     animeCadenceDetection.checked = s.animeCadenceDetection ?? true;
     showSideControls.checked = s.showSideControls ?? true;
 
+    updateMultiplierModeVisibility(s.multiplierMode ?? 'fixed');
     setMode(s.mode ?? 'hybrid');
 
     if (result.activePlayerStatus) {
@@ -101,12 +119,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Save Settings
   function saveAndApplySettings() {
     const sh = parseFloat(fsrSharpness.value);
+    const bypassVal = parseInt(autoBypassFpsInput.value, 10);
     const updatedSettings: ExtensionSettings = {
       isEnabled: masterToggle.checked,
       mode: activeMode,
+      multiplierMode: multiplierModeSelect.value as MultiplierMode,
       multiplier: parseInt(multiplierSelect.value, 10) as Multiplier,
+      targetFps: parseInt(targetFpsSelect.value, 10),
       scalerAlgorithm: scalerSelect.value as ScalerAlgorithm,
-      autoBypassFps: parseInt(autoBypassSelect.value, 10),
+      autoBypassFps: isNaN(bypassVal) ? 60 : Math.max(0, bypassVal),
       animeCadenceDetection: animeCadenceDetection.checked,
       cadenceThreshold: 0.01,
       fsrSharpness: sh,
@@ -120,8 +141,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Event Listeners
   masterToggle.addEventListener('change', saveAndApplySettings);
   scalerSelect.addEventListener('change', saveAndApplySettings);
+  multiplierModeSelect.addEventListener('change', () => {
+    updateMultiplierModeVisibility(multiplierModeSelect.value as MultiplierMode);
+    saveAndApplySettings();
+  });
   multiplierSelect.addEventListener('change', saveAndApplySettings);
-  autoBypassSelect.addEventListener('change', saveAndApplySettings);
+  targetFpsSelect.addEventListener('change', saveAndApplySettings);
+  autoBypassFpsInput.addEventListener('input', saveAndApplySettings);
   animeCadenceDetection.addEventListener('change', saveAndApplySettings);
   showSideControls.addEventListener('change', saveAndApplySettings);
 

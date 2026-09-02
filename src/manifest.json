@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FrameGen WebGPU (60 FPS & Video Scaler)",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Hardware 60 FPS Frame Generation & Video Scaler (Anime4K / AMD FSR / Bicubic) via WebGPU",
   "permissions": [
     "storage",
@@ -27,12 +27,12 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Anime FrameGen Control"
+    "default_title": "FrameGen WebGPU Control"
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["content-loader.js"],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true,
@@ -43,8 +43,12 @@
     {
       "resources": [
         "content.js",
+        "chunks/*",
+        "models/*",
         "popup.html",
-        "assets/*"
+        "assets/*",
+        "*.wasm",
+        "*.mjs"
       ],
       "matches": ["<all_urls>"]
     }

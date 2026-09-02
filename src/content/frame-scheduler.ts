@@ -249,7 +249,7 @@ export class FrameScheduler {
 
   private scheduleSubframes(frameDurationMs: number, width: number, height: number): void {
     this.clearTimers();
-    const steps = this.pipelineManager.getInterpolationSteps();
+    const steps = this.pipelineManager.getInterpolationSteps(this.sourceFps);
 
     for (const step of steps) {
       const delay = Math.max(4, Math.round(frameDurationMs * step));

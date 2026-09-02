@@ -90,7 +90,25 @@ export class PipelineManager {
     }
   }
 
-  public getInterpolationSteps(): number[] {
+  /**
+   * Generates timesteps array based on fixed multiplier or adaptive floating target FPS.
+   */
+  public getInterpolationSteps(sourceFps = 24): number[] {
+    // 1. Adaptive floating multiplier for target FPS (e.g. 60, 75, 120, 144, 240)
+    if (this.settings.multiplierMode === 'target_fps' && this.settings.targetFps > 0 && sourceFps > 0) {
+      if (sourceFps >= this.settings.targetFps) {
+        return [];
+      }
+      const k = this.settings.targetFps / sourceFps;
+      const steps: number[] = [];
+      const stepDelta = 1.0 / k;
+      for (let t = stepDelta; t < 0.99; t += stepDelta) {
+        steps.push(Math.round(t * 1000) / 1000);
+      }
+      return steps;
+    }
+
+    // 2. Fixed multiplier (x2, x3, x4)
     switch (this.settings.multiplier) {
       case 2:
         return [0.5];
