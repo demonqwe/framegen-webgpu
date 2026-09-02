@@ -3,30 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Video Frame Generator</title>
+  <title>FrameGen WebGPU</title>
   <link rel="stylesheet" href="./src/popup/popup.css">
 </head>
 <body>
   <div class="container">
     <header class="header">
       <div class="brand">
-        <span class="brand-title">FrameGen Control</span>
-        <span class="brand-sub">RTX Video Upscaler & 60 FPS</span>
+        <span class="brand-title">FrameGen WebGPU</span>
+        <span class="brand-sub">60-120 FPS & 1440p Scaler</span>
       </div>
       <label class="switch">
-        <input type="checkbox" id="masterToggle" checked>
+        <input type="checkbox" id="masterToggle">
         <span class="slider"></span>
       </label>
     </header>
-
-    <!-- Scaler Selector -->
-    <div class="section-title">Алгоритм масштабирования</div>
-    <div class="segmented-control">
-      <button type="button" class="seg-btn active" data-mode="anime4k">Anime4K</button>
-      <button type="button" class="seg-btn" data-mode="fsr">AMD FSR</button>
-      <button type="button" class="seg-btn" data-mode="bicubic">Bicubic</button>
-      <button type="button" class="seg-btn" data-mode="off">Выкл</button>
-    </div>
 
     <!-- Status Panel -->
     <div class="panel">
@@ -44,36 +35,67 @@
       </div>
     </div>
 
+    <!-- Mode Selector -->
+    <div class="section-title">Режим работы</div>
+    <div class="segmented-control">
+      <button type="button" class="seg-btn active" data-mode="hybrid">Гибридный</button>
+      <button type="button" class="seg-btn" data-mode="generator_only">Кадры</button>
+      <button type="button" class="seg-btn" data-mode="upscale_only">Апскейл</button>
+    </div>
+
     <!-- Controls -->
     <div class="panel">
       <div class="control-row">
-        <label for="fpsMode" class="dim">Генерация кадров</label>
-        <select id="fpsMode" class="select-box">
-          <option value="60fps">Целевая: 60 FPS (Авто 24→60)</option>
-          <option value="120fps">Высокая: 120 FPS (Для 120Hz+)</option>
-          <option value="native">Нативная частота (Без генерации)</option>
+        <label for="scalerSelect" class="dim">Алгоритм апскейла</label>
+        <select id="scalerSelect" class="select-box">
+          <option value="fsr">AMD FSR 1.0 (EASU + RCAS)</option>
+          <option value="anime4k">Anime4K v4.0 (Line Thinning)</option>
+          <option value="span">SPAN x2 (Субпиксельный)</option>
+          <option value="compact">Real-ESRGAN Compact x2 (Деблок)</option>
+          <option value="bicubic">Bicubic Catmull-Rom (16-Tap)</option>
+          <option value="off">Выкл (1:1 без масштабирования)</option>
+        </select>
+      </div>
+
+      <div class="control-row">
+        <label for="multiplierSelect" class="dim">Множитель частоты</label>
+        <select id="multiplierSelect" class="select-box">
+          <option value="2">2× (Плавные 60 FPS)</option>
+          <option value="3">3× (Ультра 90 FPS)</option>
+          <option value="4">4× (Максимальные 120 FPS)</option>
+        </select>
+      </div>
+
+      <div class="control-row">
+        <label for="autoBypassSelect" class="dim">Авто-пропуск кадров</label>
+        <select id="autoBypassSelect" class="select-box">
+          <option value="60">При входных ≥ 60 FPS (YouTube 60fps)</option>
+          <option value="50">При входных ≥ 50 FPS (ТВ трансляции)</option>
+          <option value="48">При входных ≥ 48 FPS (HFR кино)</option>
+          <option value="30">При входных ≥ 30 FPS</option>
+          <option value="0">Отключить (Генерировать всегда)</option>
         </select>
       </div>
 
       <div class="control-row-col">
         <div class="label-val-row">
-          <span class="dim">Резкость и чёткость</span>
-          <span class="val-num" id="strengthValue">80%</span>
+          <span class="dim">Резкость и шарпенинг</span>
+          <span class="val-num" id="sharpnessValue">80%</span>
         </div>
-        <input type="range" id="anime4kStrength" min="0" max="1.5" step="0.05" value="0.8" class="range-input">
+        <input type="range" id="fsrSharpness" min="0" max="1.0" step="0.05" value="0.8" class="range-input">
       </div>
 
       <div class="checkbox-row">
         <label class="check-label">
-          <input type="checkbox" id="autoDisableWhenNativeOrHigher" checked>
-          <span>Пропускать апскейл при нативном качестве экрана (≥1440p)</span>
+          <input type="checkbox" id="animeCadenceDetection" checked>
+          <span>Умный каденс аниме (пропуск дубликатов)</span>
         </label>
       </div>
 
       <div class="checkbox-row">
         <label class="check-label">
           <input type="checkbox" id="showSideControls" checked>
-          <span>Отображать боковой переключатель (60 FPS ↔ VSR)</span>
+          <span>Отображать боковой переключатель слева</span>
         </label>
       </div>
     </div>

@@ -1,25 +1,28 @@
 /**
- * Popup Controller: Sleek, non-hyped settings management and telemetry.
+ * Popup Controller: Manages settings, telemetry, and pipeline configuration.
  */
 
-type ScalerMode = 'anime4k' | 'fsr' | 'bicubic' | 'off';
+import { ExtensionSettings, DEFAULT_SETTINGS, OperationMode, Multiplier, ScalerAlgorithm } from '../config/defaults';
 
 document.addEventListener('DOMContentLoaded', async () => {
   const masterToggle = document.getElementById('masterToggle') as HTMLInputElement;
   const statusText = document.getElementById('statusText') as HTMLElement;
   const fpsCounter = document.getElementById('fpsCounter') as HTMLElement;
   const videoRes = document.getElementById('videoRes') as HTMLElement;
-  const fpsMode = document.getElementById('fpsMode') as HTMLSelectElement;
-  const anime4kStrength = document.getElementById('anime4kStrength') as HTMLInputElement;
-  const strengthValue = document.getElementById('strengthValue') as HTMLElement;
-  const autoDisableNative = document.getElementById('autoDisableWhenNativeOrHigher') as HTMLInputElement;
+
+  const scalerSelect = document.getElementById('scalerSelect') as HTMLSelectElement;
+  const multiplierSelect = document.getElementById('multiplierSelect') as HTMLSelectElement;
+  const autoBypassSelect = document.getElementById('autoBypassSelect') as HTMLSelectElement;
+  const fsrSharpness = document.getElementById('fsrSharpness') as HTMLInputElement;
+  const sharpnessValue = document.getElementById('sharpnessValue') as HTMLElement;
+  const animeCadenceDetection = document.getElementById('animeCadenceDetection') as HTMLInputElement;
   const showSideControls = document.getElementById('showSideControls') as HTMLInputElement;
   const segButtons = document.querySelectorAll<HTMLButtonElement>('.seg-btn');
 
-  let activeScalerMode: ScalerMode = 'anime4k';
+  let activeMode: OperationMode = 'hybrid';
 
-  function setScalerMode(mode: ScalerMode) {
-    activeScalerMode = mode;
+  function setMode(mode: OperationMode) {
+    activeMode = mode;
     segButtons.forEach((btn) => {
       if (btn.dataset.mode === mode) {
         btn.classList.add('active');
@@ -52,40 +55,33 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText.style.color = '#94a3b8';
       fpsCounter.textContent = '0 FPS';
     } else {
-      statusText.textContent = status.settings?.enabled ? 'Поиск плеера...' : 'Отключено';
+      statusText.textContent = status.settings?.isEnabled ? 'Поиск плеера...' : 'Отключено';
       statusText.style.color = '#64748b';
       fpsCounter.textContent = '-- FPS';
     }
   }
 
-  // Load Settings
+  // Load Settings (default isEnabled: false)
   chrome.storage.local.get(['frameGenSettings', 'activePlayerStatus'], (result) => {
-    if (result.frameGenSettings) {
-      const s = result.frameGenSettings;
-      masterToggle.checked = s.enabled ?? true;
-      fpsMode.value = (s.targetFpsMode === '2x' || !s.targetFpsMode) ? '60fps' : s.targetFpsMode;
-      if (s.anime4kParams) {
-        const str = Number(s.anime4kParams.strength ?? 0.8);
-        anime4kStrength.value = String(str);
-        strengthValue.textContent = `${Math.round(str * 100)}%`;
-        if (s.anime4kParams.scalerMode) {
-          setScalerMode(s.anime4kParams.scalerMode);
-        }
-      }
-      if (autoDisableNative) {
-        autoDisableNative.checked = s.autoDisableWhenNativeOrHigher ?? true;
-      }
-      if (showSideControls) {
-        showSideControls.checked = s.showSideControls ?? true;
-      }
-    }
+    const s: ExtensionSettings = result.frameGenSettings ? { ...DEFAULT_SETTINGS, ...result.frameGenSettings } : { ...DEFAULT_SETTINGS };
+
+    masterToggle.checked = s.isEnabled ?? false;
+    scalerSelect.value = s.scalerAlgorithm ?? 'fsr';
+    multiplierSelect.value = String(s.multiplier ?? 2);
+    autoBypassSelect.value = String(s.autoBypassFps ?? 60);
+    fsrSharpness.value = String(s.fsrSharpness ?? 0.8);
+    sharpnessValue.textContent = `${Math.round((s.fsrSharpness ?? 0.8) * 100)}%`;
+    animeCadenceDetection.checked = s.animeCadenceDetection ?? true;
+    showSideControls.checked = s.showSideControls ?? true;
+
+    setMode(s.mode ?? 'hybrid');
 
     if (result.activePlayerStatus) {
       applyStatus(result.activePlayerStatus);
     }
   });
 
-  // Listen for telemetry
+  // Listen for telemetry updates
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local' && changes.activePlayerStatus) {
       applyStatus(changes.activePlayerStatus.newValue);
@@ -104,39 +100,41 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Save Settings
   function saveAndApplySettings() {
-    const str = parseFloat(anime4kStrength.value);
-    const updatedSettings = {
-      enabled: masterToggle.checked,
-      targetFpsMode: fpsMode.value,
-      resolutionProfile: 'auto',
-      anime4kParams: {
-        strength: str,
-        thinningThreshold: 0.05,
-        scalerMode: activeScalerMode
-      },
-      autoDisableWhenNativeOrHigher: autoDisableNative ? autoDisableNative.checked : true,
-      showSideControls: showSideControls ? showSideControls.checked : true
+    const sh = parseFloat(fsrSharpness.value);
+    const updatedSettings: ExtensionSettings = {
+      isEnabled: masterToggle.checked,
+      mode: activeMode,
+      multiplier: parseInt(multiplierSelect.value, 10) as Multiplier,
+      scalerAlgorithm: scalerSelect.value as ScalerAlgorithm,
+      autoBypassFps: parseInt(autoBypassSelect.value, 10),
+      animeCadenceDetection: animeCadenceDetection.checked,
+      cadenceThreshold: 0.01,
+      fsrSharpness: sh,
+      showSideControls: showSideControls.checked,
+      showDebug: false
     };
 
     chrome.storage.local.set({ frameGenSettings: updatedSettings });
   }
 
-  // Events
+  // Event Listeners
   masterToggle.addEventListener('change', saveAndApplySettings);
-  fpsMode.addEventListener('change', saveAndApplySettings);
-  if (autoDisableNative) autoDisableNative.addEventListener('change', saveAndApplySettings);
-  if (showSideControls) showSideControls.addEventListener('change', saveAndApplySettings);
+  scalerSelect.addEventListener('change', saveAndApplySettings);
+  multiplierSelect.addEventListener('change', saveAndApplySettings);
+  autoBypassSelect.addEventListener('change', saveAndApplySettings);
+  animeCadenceDetection.addEventListener('change', saveAndApplySettings);
+  showSideControls.addEventListener('change', saveAndApplySettings);
 
-  anime4kStrength.addEventListener('input', () => {
-    const str = parseFloat(anime4kStrength.value);
-    strengthValue.textContent = `${Math.round(str * 100)}%`;
+  fsrSharpness.addEventListener('input', () => {
+    const sh = parseFloat(fsrSharpness.value);
+    sharpnessValue.textContent = `${Math.round(sh * 100)}%`;
     saveAndApplySettings();
   });
 
   segButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
-      const mode = (btn.dataset.mode || 'anime4k') as ScalerMode;
-      setScalerMode(mode);
+      const mode = (btn.dataset.mode || 'hybrid') as OperationMode;
+      setMode(mode);
       saveAndApplySettings();
     });
   });
