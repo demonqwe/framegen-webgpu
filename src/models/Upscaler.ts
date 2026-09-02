@@ -28,6 +28,20 @@ export class UpscalerManager {
     this.device = device;
     this.anime4kPass = new Anime4KPass(device, presentationFormat);
     this.converter = new TensorTextureConverter(device);
+
+    // Share GPUDevice with ONNX Runtime WebGPU JSEP
+    this.configureWebGpuDevice();
+  }
+
+  private configureWebGpuDevice(): void {
+    try {
+      if (!ort.env.webgpu) {
+        (ort.env as any).webgpu = {};
+      }
+      ort.env.webgpu.device = this.device;
+    } catch (e) {
+      console.warn('[FrameGen] WebGPU device configuration warning:', e);
+    }
   }
 
   public setMode(mode: ScalerAlgorithm): void {
@@ -43,6 +57,7 @@ export class UpscalerManager {
   public async initSession(mode: ScalerAlgorithm, target4k = false): Promise<void> {
     if (this.isInitializing) return;
     this.isInitializing = true;
+    this.configureWebGpuDevice();
 
     try {
       if (mode === 'span' && !this.spanSession) {
@@ -52,7 +67,7 @@ export class UpscalerManager {
             executionProviders: ['webgpu'],
             graphOptimizationLevel: 'all'
           });
-          console.log('[FrameGen] SPAN x2 ONNX session initialized on WebGPU.');
+          console.log('[FrameGen] SPAN x2 ONNX session initialized on shared WebGPU device.');
         } catch (e) {
           console.warn('[FrameGen] SPAN x2 model not loaded, will run in WGSL mode.', e);
         }
@@ -69,7 +84,7 @@ export class UpscalerManager {
           } else {
             this.compactSession = session;
           }
-          console.log(`[FrameGen] Real-ESRGAN Compact (${target4k ? '4K' : '2x'}) ONNX session initialized on WebGPU.`);
+          console.log(`[FrameGen] Real-ESRGAN Compact (${target4k ? '4K' : '2x'}) ONNX session initialized on shared WebGPU device.`);
         } catch (e) {
           console.warn('[FrameGen] Real-ESRGAN Compact model not loaded, will run in WGSL mode.', e);
         }
@@ -91,14 +106,15 @@ export class UpscalerManager {
     const inSize = 3 * srcWidth * srcHeight * 4; // float32 NHWC
     const outSize = 3 * dstWidth * dstHeight * 4; // float32 NHWC
 
+    // Provide all buffer usage flags needed by WebGPU JSEP compute kernels
     this.inputBuffer = this.device.createBuffer({
       size: inSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
     });
 
     this.outputBuffer = this.device.createBuffer({
       size: outSize,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM
     });
 
     this.outputTexture = this.device.createTexture({
@@ -129,8 +145,7 @@ export class UpscalerManager {
       return false;
     }
 
-    // Mutex guard: ONNX sessions are NOT reentrant. If a frame inference is currently in-flight,
-    // render the latest completed texture or pass-through immediately to prevent black screen & "Session already started" error.
+    // Mutex guard: Prevent "Session already started" re-entrancy error
     if (this.isInferencing) {
       if (this.hasCompletedInference && this.outputTexture) {
         this.anime4kPass.render(this.outputTexture, outputTargetView, targetWidth, targetHeight, {
@@ -149,6 +164,7 @@ export class UpscalerManager {
     let results: Record<string, ort.Tensor> | null = null;
 
     try {
+      this.configureWebGpuDevice();
       const paddedIn = calculatePaddedDimensions(srcWidth, srcHeight, 16);
       const paddedOut = calculatePaddedDimensions(targetWidth, targetHeight, 16);
       const dstW = targetWidth;
@@ -163,7 +179,7 @@ export class UpscalerManager {
       // 1. Texture -> NHWC GPU Buffer
       this.converter.convertTextureToNHWC(srcTexture, this.inputBuffer, paddedIn);
 
-      // 2. Wrap buffer as native NHWC ONNX Tensor [1, H, W, 3]
+      // 2. Wrap buffer as native NHWC ONNX Tensor [1, H, W, 3] on shared GPUDevice
       if ((ort.Tensor as any).fromGpuBuffer) {
         try {
           inputTensor = (ort.Tensor as any).fromGpuBuffer(this.inputBuffer, {
