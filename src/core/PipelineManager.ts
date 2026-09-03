@@ -135,6 +135,10 @@ export class PipelineManager {
     return this.upscalerManager.isOnnxActive();
   }
 
+  public getUpscalerLatencyMs(): number {
+    return this.upscalerManager.getLastLatencyMs();
+  }
+
   /**
    * Computes target canvas dimensions for 1440p, 4K, or Auto.
    */

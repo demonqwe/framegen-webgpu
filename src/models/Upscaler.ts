@@ -19,8 +19,14 @@ export class UpscalerManager {
     this.neuralSRPass = new NeuralSRPass(device);
   }
 
+  private lastLatencyMs = 0;
+
   public setMode(mode: ScalerAlgorithm): void {
     this.currentMode = mode;
+  }
+
+  public getLastLatencyMs(): number {
+    return this.lastLatencyMs;
   }
 
   public isOnnxActive(): boolean {
@@ -118,6 +124,45 @@ export class UpscalerManager {
     srcWidth?: number,
     srcHeight?: number
   ): void {
+    const inW = srcWidth || srcTexture.width || targetWidth;
+    const inH = srcHeight || srcTexture.height || targetHeight;
+
+    if (this.currentMode === 'neural_sr') {
+      try {
+        this.ensureIntermediateTexture(targetWidth, targetHeight);
+        if (this.intermediateTexture) {
+          const t0 = performance.now();
+          this.neuralSRPass.render(
+            srcTexture,
+            this.intermediateTexture,
+            inW,
+            inH,
+            {
+              algorithm: 'span',
+              strength: sharpness,
+              targetWidth,
+              targetHeight
+            }
+          );
+          this.anime4kPass.render(
+            this.intermediateTexture,
+            outputTargetView,
+            targetWidth,
+            targetHeight,
+            {
+              strength: sharpness,
+              thinningThreshold: 0.05,
+              scalerMode: 'off'
+            }
+          );
+          this.lastLatencyMs = Math.round((performance.now() - t0) * 10) / 10;
+          return;
+        }
+      } catch (e) {
+        console.warn('[FrameGen] Neural SR execution error, fallback to FSR:', e);
+      }
+    }
+
     let passMode: 'anime4k' | 'fsr' | 'bicubic' | 'off' = 'fsr';
 
     switch (this.currentMode) {
@@ -135,9 +180,6 @@ export class UpscalerManager {
         passMode = 'fsr';
         break;
     }
-
-    const inW = srcWidth || srcTexture.width || targetWidth;
-    const inH = srcHeight || srcTexture.height || targetHeight;
 
     this.anime4kPass.render(
       srcTexture,

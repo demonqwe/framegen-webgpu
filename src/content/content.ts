@@ -792,6 +792,7 @@ class ContentController {
     let upscalerText = 'AMD FSR 1.0 (EASU+RCAS)';
     switch (this.settings.scalerAlgorithm) {
       case 'anime4k': upscalerText = 'Anime4K v4.0'; break;
+      case 'neural_sr': upscalerText = 'Нейросеть (Super-Res x2)'; break;
       case 'bicubic': upscalerText = 'Bicubic Catmull-Rom'; break;
       case 'off': upscalerText = '1:1 Direct'; break;
       case 'fsr': default: upscalerText = 'AMD FSR 1.0 (EASU+RCAS)'; break;
@@ -801,11 +802,16 @@ class ContentController {
       ? `<span style="color:#4ade80;">Умный пропуск (ВКЛ)</span>`
       : `<span style="color:#94a3b8;">Выкл</span>`;
 
+    const latency = this.scheduler ? this.scheduler.getLatencyMs() : 0;
+    const latencyRow = latency > 0
+      ? `<div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Задержка GPU:</span><span style="color:#a7f3d0;font-weight:600;">${latency} мс</span></div>`
+      : '';
+
     const compareRow = this.isCompareActive
       ? `<div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;background:rgba(251,191,36,0.15);padding:2px 4px;border-radius:4px;"><span style="color:#fbbf24;font-weight:700;">Сравнение [C]:</span><span style="color:#fbbf24;font-weight:700;">ОРИГИНАЛ (A)</span></div>`
       : '';
 
-    let rowsHtml = compareRow;
+    let rowsHtml = compareRow + latencyRow;
 
     // Mode-adaptive display
     if (this.settings.mode === 'generator_only') {

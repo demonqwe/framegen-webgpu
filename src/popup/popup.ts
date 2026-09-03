@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function updateSharpnessVisibility(scaler: string) {
     if (sharpnessRow) {
-      sharpnessRow.style.display = (scaler === 'fsr' || scaler === 'anime4k') ? 'flex' : 'none';
+      sharpnessRow.style.display = (scaler === 'fsr' || scaler === 'anime4k' || scaler === 'neural_sr') ? 'flex' : 'none';
     }
   }
 
