@@ -8,7 +8,7 @@ export type OperationMode = 'hybrid' | 'generator_only' | 'upscale_only';
 export type Multiplier = 2 | 3 | 4;
 export type MultiplierMode = 'fixed' | 'target_fps';
 export type TargetResolution = '1440p' | '4k' | 'auto';
-export type ScalerAlgorithm = 'fsr' | 'anime4k' | 'bicubic' | 'off';
+export type ScalerAlgorithm = 'fsr' | 'anime4k' | 'neural_sr' | 'bicubic' | 'off';
 
 export type NeuralModelType = 'v7s' | 'tfact2';
 export type FramegenEngineType = 'neural' | 'motion_flow';
