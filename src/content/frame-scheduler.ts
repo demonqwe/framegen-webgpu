@@ -321,21 +321,21 @@ export class FrameScheduler {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
     });
 
-    // 5. Render base frame -> Canvas
-    if (this.hasCapturedAnyT0 && !cadenceResult.isDuplicate) {
+    // 5. Render base frame -> Canvas (ALWAYS render to maintain source video cadence, never drop to 12 FPS!)
+    if (this.hasCapturedAnyT0) {
       await this.renderFrame(this.texPrev || this.texCurr, videoWidth, videoHeight);
-    } else if (!this.hasCapturedAnyT0) {
+    } else {
       await this.renderFrame(this.texCurr, videoWidth, videoHeight);
     }
 
     // 6. Schedule real motion-interpolated sub-frames if enabled
     const isHighFpsSource = this.sourceFps >= this.settings.autoBypassFps;
-    const shouldInterpolate = !this.isCompareMode && this.settings.mode !== 'upscale_only' && !isHighFpsSource && !cadenceResult.isDuplicate && this.hasCapturedAnyT0 && !!this.texPrev && !!this.texCurr;
+    const shouldInterpolate = !this.isCompareMode && this.settings.mode !== 'upscale_only' && !isHighFpsSource && this.hasCapturedAnyT0 && !!this.texPrev && !!this.texCurr;
 
     if (shouldInterpolate) {
       // Use PLL-smoothed intervalMs clamped to [16ms .. 100ms] to eliminate sudden drops to 24 FPS
       const durationMs = (deltaT > 0.015 && deltaT < 0.1) ? deltaT * 1000 : this.intervalMs;
-      this.scheduleSubframes(durationMs, videoWidth, videoHeight, this.texPrev!, this.texCurr!);
+      this.scheduleSubframes(durationMs, videoWidth, videoHeight, this.texPrev!, this.texCurr!, cadenceResult.isDuplicate);
     }
 
     this.hasCapturedAnyT0 = true;
@@ -373,7 +373,8 @@ export class FrameScheduler {
     width: number,
     height: number,
     t0Texture: GPUTexture,
-    t1Texture: GPUTexture
+    t1Texture: GPUTexture,
+    isDuplicate = false
   ): void {
     this.clearTimers();
     const steps = this.pipelineManager.getInterpolationSteps(this.sourceFps);
@@ -384,7 +385,7 @@ export class FrameScheduler {
       const timer = window.setTimeout(() => {
         if (!this.isRunning || this.video.paused) return;
         if (this.isGpuRendering) return; // Drop subframe if GPU is busy to avoid queue buildup
-        this.renderInterpolated(t0Texture, t1Texture, step, width, height);
+        this.renderInterpolated(t0Texture, t1Texture, step, width, height, isDuplicate);
       }, delay);
       this.intermediateTimers.push(timer);
     }
@@ -397,7 +398,8 @@ export class FrameScheduler {
     t1Texture: GPUTexture,
     stepT: number,
     srcWidth: number,
-    srcHeight: number
+    srcHeight: number,
+    isDuplicate = false
   ): void {
     if (this.isGpuRendering || !this.isRunning || this.video.paused) return;
     this.isGpuRendering = true;
@@ -413,18 +415,33 @@ export class FrameScheduler {
 
         const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Interpolate' });
 
-        // Run real motion estimation + bidirectional warp + upscaling
-        await this.pipelineManager.generateInterpolatedFrame(
-          commandEncoder,
-          t0Texture,
-          t1Texture,
-          stepT,
-          targetView,
-          srcWidth,
-          srcHeight,
-          targetWidth,
-          targetHeight
-        );
+        if (isDuplicate && this.settings.animeCadenceDetection) {
+          // Smart Anime Cadence: frames are identical drawings.
+          // Skip heavy neural motion estimation to eliminate line warping / artifacts,
+          // while maintaining rock-solid 60 FPS output cadence!
+          await this.pipelineManager.upscaleFrame(
+            commandEncoder,
+            t1Texture,
+            targetView,
+            srcWidth,
+            srcHeight,
+            targetWidth,
+            targetHeight
+          );
+        } else {
+          // Run real motion estimation + bidirectional warp + upscaling
+          await this.pipelineManager.generateInterpolatedFrame(
+            commandEncoder,
+            t0Texture,
+            t1Texture,
+            stepT,
+            targetView,
+            srcWidth,
+            srcHeight,
+            targetWidth,
+            targetHeight
+          );
+        }
 
         this.device.queue.submit([commandEncoder.finish()]);
 

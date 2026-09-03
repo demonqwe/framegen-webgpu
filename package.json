@@ -1,6 +1,6 @@
 {
   "name": "framegen-webgpu",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Hardware 60 FPS Frame Generation & Video Scaler (Anime4K / AMD FSR / Bicubic) via WebGPU",
   "type": "module",
   "scripts": {
