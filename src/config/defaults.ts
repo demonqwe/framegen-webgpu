@@ -48,7 +48,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   scalerAlgorithm: 'fsr',
   autoBypassFps: 60,
   animeCadenceDetection: true,
-  cadenceThreshold: 0.01,
+  cadenceThreshold: 0.005,
   fsrSharpness: 0.8,
   showSideControls: true,
   showDebug: false

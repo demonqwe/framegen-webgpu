@@ -24,11 +24,11 @@ export class CadenceDetector {
 
   // Ring buffer holding up to 4 unique frames
   private history: FrameHistoryEntry[] = [];
-  private threshold = 0.01;
+  private threshold = 0.005;
   private isMapping = false;
   private lastDifference = 1.0;
 
-  constructor(device: GPUDevice, threshold = 0.01) {
+  constructor(device: GPUDevice, threshold = 0.005) {
     this.device = device;
     this.threshold = threshold;
 
@@ -133,7 +133,7 @@ export class CadenceDetector {
           const sumFixed = readArray[0];
           const count = readArray[1];
           if (count > 0) {
-            this.lastDifference = (sumFixed / 100000.0) / (count / 64.0);
+            this.lastDifference = (sumFixed / 100000.0) / count;
           }
           this.readbackBuffer.unmap();
         } catch {
