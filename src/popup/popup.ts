@@ -415,25 +415,33 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       let remoteVersion: string | null = null;
-      let releasesUrl = 'https://github.com/demonqwe/framegen-webgpu/releases';
+      let releasesUrl = 'https://github.com/demonqwe/framegen-webgpu/releases/latest';
 
-      // 1. Fetch raw package.json directly from GitHub
+      // 1. Fetch latest official GitHub Release (primary source of truth)
       try {
-        const res = await fetch('https://raw.githubusercontent.com/demonqwe/framegen-webgpu/dev/package.json', { cache: 'no-store' });
+        const res = await fetch(`https://api.github.com/repos/demonqwe/framegen-webgpu/releases/latest?_t=${Date.now()}`, {
+          headers: { 'Accept': 'application/vnd.github.v3+json' }
+        });
         if (res.ok) {
-          const pkg = await res.json();
-          remoteVersion = pkg.version;
+          const rel = await res.json();
+          remoteVersion = rel.tag_name ? rel.tag_name.replace(/^v/, '') : null;
+          // Direct download link if asset exists
+          const zipAsset = (rel.assets || []).find((a: any) => a.name?.endsWith('.zip'));
+          if (zipAsset && zipAsset.browser_download_url) {
+            releasesUrl = zipAsset.browser_download_url;
+          } else if (rel.html_url) {
+            releasesUrl = rel.html_url;
+          }
         }
       } catch {}
 
-      // 2. Fallback to GitHub Releases API if needed
+      // 2. Fallback to raw package.json if API was rate-limited
       if (!remoteVersion) {
         try {
-          const res = await fetch('https://api.github.com/repos/demonqwe/framegen-webgpu/releases/latest');
+          const res = await fetch(`https://raw.githubusercontent.com/demonqwe/framegen-webgpu/main/package.json?_t=${Date.now()}`);
           if (res.ok) {
-            const rel = await res.json();
-            remoteVersion = rel.tag_name ? rel.tag_name.replace(/^v/, '') : null;
-            if (rel.html_url) releasesUrl = rel.html_url;
+            const pkg = await res.json();
+            remoteVersion = pkg.version;
           }
         } catch {}
       }
@@ -448,10 +456,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateBannerTitle.textContent = `${(t as any).updateBannerTitle || 'Доступно обновление'} v${remoteVersion}`;
           }
           if (updateBannerSub) {
-            updateBannerSub.textContent = `GitHub (Текущая: v${currentVersion})`;
+            updateBannerSub.textContent = `GitHub (У вас: v${currentVersion})`;
           }
           if (updateDownloadLink) {
             updateDownloadLink.href = releasesUrl;
+            updateDownloadLink.textContent = `Скачать v${remoteVersion}`;
           }
           checkUpdateBtn.classList.add('has-update');
           checkUpdateIcon.textContent = '🚀';
@@ -462,7 +471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
           if (manual) {
             checkUpdateIcon.textContent = '✅';
-            checkUpdateText.textContent = (t as any).upToDate || 'Актуально';
+            checkUpdateText.textContent = `${(t as any).upToDate || 'Актуально'} (v${currentVersion})`;
             setTimeout(() => {
               if (checkUpdateIcon && checkUpdateText) {
                 checkUpdateIcon.textContent = '🔄';
