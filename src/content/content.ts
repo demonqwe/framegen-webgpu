@@ -37,10 +37,7 @@ class ContentController {
   private sidePillElement: HTMLElement | null = null;
   private debugHudElement: HTMLElement | null = null;
   private showDebugHud = false;
-  private vsrBypass = false;
   private isAttaching = false;
-  private isTransitioning = false;
-  private pillFadeTimeout: number | null = null;
 
   private settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 
@@ -76,10 +73,8 @@ class ContentController {
       if (result && result.showDebug !== undefined) {
         this.showDebugHud = !!result.showDebug;
       }
-      if (result && result.siteVsrOverrides) {
-        if (result.siteVsrOverrides[host] !== undefined) {
-          this.vsrBypass = !!result.siteVsrOverrides[host];
-        }
+      if (isExtensionValid() && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.remove(['siteVsrOverrides']);
       }
       this.startVideoObservation();
     });
@@ -90,38 +85,17 @@ class ContentController {
         chrome.storage.onChanged.addListener((changes, areaName) => {
           if (areaName === 'local') {
             const currentHost = this.getHostName();
-            if (changes.siteProfiles) {
-              const newProfiles = changes.siteProfiles.newValue || {};
-              if (newProfiles[currentHost]) {
-                this.applyUpdatedSettings(newProfiles[currentHost]);
-              } else if (changes.frameGenSettings) {
-                this.applyUpdatedSettings(changes.frameGenSettings.newValue);
-              }
-            } else if (changes.globalSettings) {
-              safeStorageGet(['siteProfiles'], (res) => {
-                const profiles = res?.siteProfiles || {};
-                if (!profiles[currentHost]) {
-                  this.applyUpdatedSettings(changes.globalSettings.newValue);
-                }
-              });
-            } else if (changes.frameGenSettings) {
+            if (changes.frameGenSettings?.newValue) {
               this.applyUpdatedSettings(changes.frameGenSettings.newValue);
+            } else if (changes.siteProfiles?.newValue?.[currentHost]) {
+              this.applyUpdatedSettings(changes.siteProfiles.newValue[currentHost]);
+            } else if (changes.globalSettings?.newValue) {
+              this.applyUpdatedSettings(changes.globalSettings.newValue);
             }
 
             if (changes.showDebug !== undefined) {
               this.showDebugHud = !!changes.showDebug.newValue;
               this.updateDebugHud();
-            }
-
-            if (changes.siteVsrOverrides) {
-              const overrides = changes.siteVsrOverrides.newValue || {};
-              const host = this.getHostName();
-              if (overrides[host] !== undefined && overrides[host] !== this.vsrBypass) {
-                this.vsrBypass = overrides[host];
-                this.applyVsrBypassState();
-                this.updateSidePill();
-                this.updateDebugHud();
-              }
             }
           }
         });
@@ -152,26 +126,46 @@ class ContentController {
     window.addEventListener('timeupdate', handleGlobalVideoEvent, true);
 
     // Keyboard shortcuts:
-    // Shift + D: Diagnostic HUD
-    // G: Toggle Master On/Off
-    // C: Toggle A/B Compare (Source vs Interpolated)
+    // Shift + D / Alt + D: Diagnostic HUD
+    // Alt + G: Toggle Master On/Off (or 'G' when mouse is hovering the video player)
+    // Alt + C: Toggle A/B Compare (or 'C' when mouse is hovering the video player)
     window.addEventListener('keydown', (e) => {
-      const targetTag = (e.target as HTMLElement)?.tagName;
-      if (['INPUT', 'TEXTAREA'].includes(targetTag) || (e.target as HTMLElement)?.isContentEditable) {
+      if (this.isTypingContext(e)) {
         return;
       }
 
-      if (e.shiftKey && (e.key === 'D' || e.key === 'd' || e.code === 'KeyD')) {
+      const activeCanvas = this.overlayManager.getActiveState()?.canvas;
+      const isHoveringVideo = !!(this.currentVideo && (
+        this.currentVideo.matches(':hover') ||
+        this.currentVideo.parentElement?.matches(':hover') ||
+        (activeCanvas && activeCanvas.matches(':hover'))
+      ));
+
+      // 1. Shift + D or Alt + D: Diagnostic HUD
+      if ((e.shiftKey || e.altKey) && (e.key === 'D' || e.key === 'd' || e.code === 'KeyD')) {
         e.preventDefault();
         this.toggleDebugHud();
-      } else if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'g' || e.key === 'G' || e.code === 'KeyG')) {
+        return;
+      }
+
+      // 2. Master Toggle: Alt+G anywhere, or 'G' when mouse is hovering over video
+      const isAltG = e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'g' || e.key === 'G' || e.code === 'KeyG');
+      const isDirectG = !e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && isHoveringVideo && (e.key === 'g' || e.key === 'G');
+      if (isAltG || isDirectG) {
         e.preventDefault();
         this.toggleMaster();
-      } else if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'c' || e.key === 'C' || e.code === 'KeyC')) {
+        return;
+      }
+
+      // 3. Compare Toggle: Alt+C anywhere, or 'C' when mouse is hovering over video
+      const isAltC = e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'c' || e.key === 'C' || e.code === 'KeyC');
+      const isDirectC = !e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && isHoveringVideo && (e.key === 'c' || e.key === 'C');
+      if (isAltC || isDirectC) {
         e.preventDefault();
         this.toggleCompare();
+        return;
       }
-    }, true);
+    }, false);
 
     // Message fallback
     if (isExtensionValid() && chrome.runtime && chrome.runtime.onMessage) {
@@ -185,7 +179,7 @@ class ContentController {
       if (document.hidden) {
         if (this.scheduler) this.scheduler.stop();
       } else {
-        if (this.scheduler && this.currentVideo && !this.currentVideo.paused && this.settings.isEnabled && !this.vsrBypass) {
+        if (this.scheduler && this.currentVideo && !this.currentVideo.paused && this.settings.isEnabled) {
           this.scheduler.start();
         }
       }
@@ -194,69 +188,44 @@ class ContentController {
     this.startTelemetryLoop();
   }
 
+  private isTypingContext(e: KeyboardEvent): boolean {
+    if (e.isComposing) return true;
+
+    // 1. Check full event composed path (handles Shadow DOM on YouTube, Reddit, VK, etc.)
+    const path = e.composedPath ? e.composedPath() : [e.target];
+    for (const node of path) {
+      if (node instanceof HTMLElement) {
+        const tag = node.tagName.toUpperCase();
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (node.isContentEditable || node.getAttribute('contenteditable') === 'true') return true;
+        const role = node.getAttribute('role');
+        if (role === 'textbox' || role === 'searchbox' || role === 'combobox') return true;
+        if (node.closest && node.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="searchbox"], [role="combobox"]')) {
+          return true;
+        }
+      }
+    }
+
+    // 2. Check activeElement (piercing shadow roots)
+    let active = document.activeElement as HTMLElement | null;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) {
+      active = active.shadowRoot.activeElement as HTMLElement;
+    }
+    if (active) {
+      const activeTag = active.tagName.toUpperCase();
+      if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT') return true;
+      if (active.isContentEditable || active.getAttribute('contenteditable') === 'true') return true;
+      const role = active.getAttribute('role');
+      if (role === 'textbox' || role === 'searchbox' || role === 'combobox') return true;
+    }
+
+    return false;
+  }
+
   private toggleDebugHud(): void {
     this.showDebugHud = !this.showDebugHud;
     safeStorageSet({ showDebug: this.showDebugHud });
     this.updateDebugHud();
-  }
-
-  private async toggleVsrBypass(): Promise<void> {
-    if (this.isTransitioning) return;
-    this.isTransitioning = true;
-
-    if (this.sidePillElement) {
-      this.sidePillElement.style.pointerEvents = 'none';
-    }
-
-    try {
-      this.vsrBypass = !this.vsrBypass;
-      const host = this.getHostName();
-
-      safeStorageGet(['siteVsrOverrides'], (res) => {
-        const overrides = res?.siteVsrOverrides || {};
-        overrides[host] = this.vsrBypass;
-        safeStorageSet({ siteVsrOverrides: overrides });
-      });
-
-      this.applyVsrBypassState();
-      this.updateSidePill();
-      this.updateDebugHud();
-    } finally {
-      setTimeout(() => {
-        this.isTransitioning = false;
-        if (this.sidePillElement) {
-          this.sidePillElement.style.pointerEvents = 'auto';
-        }
-      }, 200);
-    }
-  }
-
-  private applyVsrBypassState(): void {
-    const overlay = this.overlayManager.getActiveState();
-    if (this.vsrBypass) {
-      if (overlay && overlay.canvas) {
-        overlay.canvas.style.opacity = '0';
-        overlay.canvas.style.visibility = 'hidden';
-      }
-      if (this.scheduler) {
-        this.scheduler.stop();
-      }
-    } else {
-      if (overlay && overlay.canvas) {
-        overlay.canvas.style.opacity = '1';
-        overlay.canvas.style.visibility = 'visible';
-        if (this.gpuBundle) {
-          configureCanvas(
-            this.gpuBundle.device,
-            overlay.canvas,
-            this.gpuBundle.presentationFormat
-          );
-        }
-      }
-      if (this.scheduler && this.settings.isEnabled && this.currentVideo && !this.currentVideo.paused) {
-        this.scheduler.start();
-      }
-    }
   }
 
   private startTelemetryLoop(): void {
@@ -425,7 +394,7 @@ class ContentController {
         }
       });
 
-      if (this.settings.isEnabled && !this.vsrBypass) {
+      if (this.settings.isEnabled) {
         this.scheduler.start();
       }
 
@@ -439,7 +408,7 @@ class ContentController {
   }
 
   private enableFrameGen(): void {
-    if (this.scheduler && !this.vsrBypass) {
+    if (this.scheduler) {
       this.scheduler.start();
     }
   }
@@ -487,7 +456,7 @@ class ContentController {
     if (message.type === 'GET_STATUS') {
       sendResponse({
         hasVideo: !!this.currentVideo,
-        active: !!(this.scheduler && this.settings.isEnabled && !this.vsrBypass),
+        active: !!(this.scheduler && this.settings.isEnabled),
         fps: this.scheduler ? this.scheduler.getFps() : 0,
         sourceFps: this.scheduler ? this.scheduler.getSourceFps() : 24,
         siteHost: this.getHostName(),
@@ -497,7 +466,7 @@ class ContentController {
     }
   };
 
-  // Compact Left Edge Micro-Switch with enlarged hit target & center-focused hover area
+  // Auto-Hiding Left Edge Micro-Switch on Hover
   private createOrUpdateSidePill(wrapper: HTMLElement): void {
     if (!this.settings.showSideControls) {
       if (this.sidePillElement && this.sidePillElement.parentElement) {
@@ -519,107 +488,98 @@ class ContentController {
       container.style.display = 'flex';
       container.style.alignItems = 'center';
 
-      // Compact edge hover sensor (Height 50px, Width 16px centered at 50% line)
-      const sensor = document.createElement('div');
-      sensor.style.position = 'absolute';
-      sensor.style.left = '0';
-      sensor.style.top = '-25px';
-      sensor.style.width = '16px';
-      sensor.style.height = '50px';
-      sensor.style.cursor = 'pointer';
-      sensor.style.zIndex = '2147483647';
+      // Transparent Edge Hover Trigger (Width 28px, Height 140px centered at middle)
+      const trigger = document.createElement('div');
+      trigger.style.position = 'absolute';
+      trigger.style.left = '0';
+      trigger.style.top = '-60px';
+      trigger.style.width = '28px';
+      trigger.style.height = '140px';
+      trigger.style.zIndex = '2147483647';
+      trigger.style.cursor = 'pointer';
 
-      // Compact Micro-Pill Switch (20px height)
+      // Compact Micro-Pill Switch (22px height)
       const pill = document.createElement('div');
       pill.className = 'framegen-micro-pill';
       pill.style.display = 'inline-flex';
       pill.style.alignItems = 'center';
       pill.style.gap = '5px';
-      pill.style.padding = '2px 7px';
-      pill.style.height = '20px';
-      pill.style.background = 'rgba(13, 17, 23, 0.95)';
+      pill.style.padding = '3px 8px';
+      pill.style.height = '22px';
+      pill.style.background = 'rgba(13, 17, 23, 0.92)';
       pill.style.backdropFilter = 'blur(8px)';
-      pill.style.border = '1px solid rgba(255, 255, 255, 0.22)';
+      pill.style.border = '1px solid rgba(255, 255, 255, 0.25)';
       pill.style.borderLeft = 'none';
-      pill.style.borderRadius = '0 10px 10px 0';
-      pill.style.boxShadow = '0 3px 10px rgba(0, 0, 0, 0.75)';
+      pill.style.borderRadius = '0 11px 11px 0';
+      pill.style.boxShadow = '0 3px 12px rgba(0, 0, 0, 0.8)';
       pill.style.color = '#f1f5f9';
       pill.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
       pill.style.fontSize = '10px';
-      pill.style.fontWeight = '600';
+      pill.style.fontWeight = '700';
       pill.style.cursor = 'pointer';
       pill.style.userSelect = 'none';
       pill.style.whiteSpace = 'nowrap';
+      // Hidden by default so it never distracts while watching
       pill.style.opacity = '0';
       pill.style.pointerEvents = 'none';
-      pill.style.transform = 'translateX(-12px)';
-      pill.style.transition = 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease, border-color 0.18s ease';
+      pill.style.transform = 'translateX(-100%)';
+      pill.style.transition = 'transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease';
       pill.title = 'FrameGen WebGPU Toggle (ON / OFF)';
+
+      let hideTimer: number | null = null;
+
+      const show = () => {
+        if (hideTimer) {
+          clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        pill.style.opacity = '1';
+        pill.style.pointerEvents = 'auto';
+        pill.style.transform = 'translateX(0)';
+
+        hideTimer = window.setTimeout(() => {
+          hide();
+        }, 2600);
+      };
+
+      const hide = () => {
+        pill.style.opacity = '0';
+        pill.style.pointerEvents = 'none';
+        pill.style.transform = 'translateX(-100%)';
+      };
+
+      trigger.addEventListener('mouseenter', show);
+      pill.addEventListener('mouseenter', () => {
+        if (hideTimer) clearTimeout(hideTimer);
+        pill.style.opacity = '1';
+        pill.style.pointerEvents = 'auto';
+        pill.style.transform = 'translateX(0)';
+      });
+      pill.addEventListener('mouseleave', () => {
+        hideTimer = window.setTimeout(hide, 700);
+      });
 
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
-        this.toggleVsrBypass();
+        this.toggleMaster();
+        // Briefly keep visible to confirm click, then hide
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = window.setTimeout(hide, 1400);
       });
 
-      container.appendChild(sensor);
+      // Also listen on wrapper for mouse movements near left edge
+      wrapper.addEventListener('mousemove', (e: MouseEvent) => {
+        const rect = wrapper.getBoundingClientRect();
+        const distFromLeft = e.clientX - rect.left;
+        const distFromCenterY = Math.abs(e.clientY - (rect.top + rect.height * 0.5));
+        if (distFromLeft >= 0 && distFromLeft <= 28 && distFromCenterY <= 80) {
+          show();
+        }
+      }, { passive: true });
+
+      container.appendChild(trigger);
       container.appendChild(pill);
-
-      // Smooth Edge Hover Logic & 2.5s Auto-Fadeout
-      const showPill = () => {
-        if (this.pillFadeTimeout) clearTimeout(this.pillFadeTimeout);
-        pill.style.transform = 'translateX(0)';
-        pill.style.opacity = '1';
-        pill.style.pointerEvents = 'auto';
-
-        this.pillFadeTimeout = window.setTimeout(() => {
-          hidePill();
-        }, 2500);
-      };
-
-      const hidePill = () => {
-        pill.style.transform = 'translateX(-12px)';
-        pill.style.opacity = '0';
-        pill.style.pointerEvents = 'none';
-      };
-
-      sensor.addEventListener('mouseenter', showPill);
-      pill.addEventListener('mouseenter', showPill);
-      container.addEventListener('mouseleave', () => {
-        if (this.pillFadeTimeout) clearTimeout(this.pillFadeTimeout);
-        this.pillFadeTimeout = window.setTimeout(hidePill, 600);
-      });
-
-      // Global capture mousemove: strictly triggered within +/- 25px vertically from center
-      const onGlobalMouseMove = (e: MouseEvent) => {
-        if (!this.settings.showSideControls || !this.currentVideo) return;
-        const rect = this.currentVideo.getBoundingClientRect();
-
-        const inPlayerBounds =
-          e.clientX >= rect.left &&
-          e.clientX <= rect.right &&
-          e.clientY >= rect.top &&
-          e.clientY <= rect.bottom;
-
-        if (!inPlayerBounds) {
-          hidePill();
-          return;
-        }
-
-        const centerY = rect.top + rect.height * 0.5;
-
-        // Compact zone near left edge (within 16px) and near center (+- 25px)
-        if (
-          e.clientX >= rect.left &&
-          e.clientX <= rect.left + 16 &&
-          e.clientY >= centerY - 25 &&
-          e.clientY <= centerY + 25
-        ) {
-          showPill();
-        }
-      };
-      window.addEventListener('mousemove', onGlobalMouseMove, true);
-
       this.sidePillElement = container;
     }
 
@@ -713,7 +673,7 @@ class ContentController {
     const pill = this.sidePillElement.querySelector('.framegen-micro-pill') as HTMLElement;
     if (!pill) return;
 
-    const isGenOn = this.settings.isEnabled && !this.vsrBypass;
+    const isGenOn = this.settings.isEnabled;
 
     if (isGenOn) {
       // Active FrameGen State: Clean ON
@@ -724,10 +684,10 @@ class ContentController {
       `;
     } else {
       // Native OFF State: Clean OFF
-      pill.style.borderColor = 'rgba(34, 197, 94, 0.5)';
+      pill.style.borderColor = 'rgba(148, 163, 184, 0.4)';
       pill.innerHTML = `
-        <span style="width: 5px; height: 5px; border-radius: 50%; background: #22c55e; display: inline-block;"></span>
-        <span style="color: #4ade80;">OFF</span>
+        <span style="width: 5px; height: 5px; border-radius: 50%; background: #64748b; display: inline-block;"></span>
+        <span style="color: #94a3b8;">OFF</span>
       `;
     }
   }
@@ -776,8 +736,6 @@ class ContentController {
     let fpsText = '';
     if (this.currentVideo?.paused) {
       fpsText = `<span style="color:#94a3b8;">0 FPS (${t.paused})</span>`;
-    } else if (this.vsrBypass) {
-      fpsText = `<span style="color:#4ade80;">${sourceFps} FPS (${t.nativeVsr})</span>`;
     } else if (this.settings.isEnabled) {
       fpsText = `<span style="color:#38bdf8;font-weight:700;">${sourceFps} FPS → ${liveFps || 60} FPS</span>`;
     } else {
@@ -786,32 +744,27 @@ class ContentController {
 
     const resTag = this.settings.neuralResolution === '720p' ? '720p' : (this.settings.neuralResolution === '540p' ? '540p' : 'Full');
     const engineTag = this.settings.framegenEngine === 'neural'
-      ? `<span style="color:#38bdf8;font-weight:600;">EMA-VFI [${this.settings.neuralModel === 'tfact2' ? 'v6 tfact2 4.5MB' : 'v7 small 2.9MB'} | ${resTag}]</span>`
+      ? `<span style="color:#38bdf8;font-weight:600;">EMA-VFI [${(this.settings.neuralModel === 'tfact2' || (this.settings.neuralModel as any) === 'v6') ? 'v6 tfact2 4.5MB' : 'v7 small 2.9MB'} | ${resTag}]</span>`
       : `<span style="color:#94a3b8;">Motion Flow [Hardware Compute]</span>`;
 
     let upscalerText = 'AMD FSR 1.0 (EASU+RCAS)';
     switch (this.settings.scalerAlgorithm) {
       case 'anime4k': upscalerText = 'Anime4K v4.0'; break;
-      case 'neural_sr': upscalerText = 'Нейросеть (Super-Res x2)'; break;
       case 'bicubic': upscalerText = 'Bicubic Catmull-Rom'; break;
       case 'off': upscalerText = '1:1 Direct'; break;
       case 'fsr': default: upscalerText = 'AMD FSR 1.0 (EASU+RCAS)'; break;
     }
 
+    const dups = this.scheduler ? this.scheduler.getDuplicateSkips() : 0;
     const cadenceTag = this.settings.animeCadenceDetection
-      ? `<span style="color:#4ade80;">Умный пропуск (ВКЛ)</span>`
-      : `<span style="color:#94a3b8;">Выкл</span>`;
-
-    const latency = this.scheduler ? this.scheduler.getLatencyMs() : 0;
-    const latencyRow = latency > 0
-      ? `<div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;"><span style="color:#94a3b8;">Задержка GPU:</span><span style="color:#a7f3d0;font-weight:600;">${latency} мс</span></div>`
-      : '';
+      ? `<span style="color:#4ade80;font-weight:600;">Умный пропуск (ВКЛ)</span> <span style="color:#64748b;font-size:10px;">[дублей: ${dups}]</span>`
+      : `<span style="color:#ef4444;font-weight:600;">Выкл</span>`;
 
     const compareRow = this.isCompareActive
       ? `<div style="display:flex;justify-content:space-between;gap:16px;margin:3px 0;background:rgba(251,191,36,0.15);padding:2px 4px;border-radius:4px;"><span style="color:#fbbf24;font-weight:700;">Сравнение [C]:</span><span style="color:#fbbf24;font-weight:700;">ОРИГИНАЛ (A)</span></div>`
       : '';
 
-    let rowsHtml = compareRow + latencyRow;
+    let rowsHtml = compareRow;
 
     // Mode-adaptive display
     if (this.settings.mode === 'generator_only') {
@@ -848,7 +801,7 @@ class ContentController {
         ${fpsText}
       </div>
       ${rowsHtml}
-      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">G: Вкл/Выкл • C: Сравнение • Shift+D: Скрыть</div>
+      <div style="font-size:9px;color:#64748b;margin-top:6px;text-align:right;">Alt+G: Вкл/Выкл • Alt+C: Сравнение • Shift+D: Скрыть</div>
     `;
   }
 }

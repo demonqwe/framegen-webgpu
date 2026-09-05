@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const neuralResolutionRow = document.getElementById('neuralResolutionRow') as HTMLElement;
   const presetAnimeBtn = document.getElementById('presetAnimeBtn') as HTMLButtonElement;
   const presetCinemaBtn = document.getElementById('presetCinemaBtn') as HTMLButtonElement;
+  const presetUltraBtn = document.getElementById('presetUltraBtn') as HTMLButtonElement;
   const presetEcoBtn = document.getElementById('presetEcoBtn') as HTMLButtonElement;
   const scalerSelect = document.getElementById('scalerSelect') as HTMLSelectElement;
   const targetResSelect = document.getElementById('targetResSelect') as HTMLSelectElement;
@@ -39,8 +40,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   const langRu = document.getElementById('langRu') as HTMLElement;
   const langEn = document.getElementById('langEn') as HTMLElement;
 
+  const checkUpdateBtn = document.getElementById('checkUpdateBtn') as HTMLButtonElement | null;
+  const checkUpdateIcon = document.getElementById('checkUpdateIcon') as HTMLElement | null;
+  const checkUpdateText = document.getElementById('checkUpdateText') as HTMLElement | null;
+  const currentVersionText = document.getElementById('currentVersionText') as HTMLElement | null;
+  const updateBanner = document.getElementById('updateBanner') as HTMLElement | null;
+  const updateBannerTitle = document.getElementById('updateBannerTitle') as HTMLElement | null;
+  const updateBannerSub = document.getElementById('updateBannerSub') as HTMLElement | null;
+  const updateDownloadLink = document.getElementById('updateDownloadLink') as HTMLAnchorElement | null;
+
   let activeMode: OperationMode = 'hybrid';
   let currentLang: Language = 'ru';
+
+  const currentVersion = (chrome.runtime?.getManifest ? chrome.runtime.getManifest().version : '1.2.0') || '1.2.0';
+  if (currentVersionText) {
+    currentVersionText.textContent = `v${currentVersion}`;
+  }
 
   let currentDomain = 'global';
   let activeTabId: number | null = null;
@@ -49,10 +64,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Determine current site domain from active tab
   try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs && tabs[0] && tabs[0].url) {
-      activeTabId = tabs[0].id || null;
-      currentDomain = getDomainFromUrl(tabs[0].url);
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = tabs[0] || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+    if (tab) {
+      activeTabId = tab.id || null;
+      if (tab.url) {
+        currentDomain = getDomainFromUrl(tab.url);
+      }
     }
   } catch {}
 
@@ -107,6 +125,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     el('t_animeCadenceLabel', t.animeCadenceLabel);
     el('t_sideControlsLabel', t.sideControlsLabel);
     el('t_footerHint', t.footerHint);
+    el('checkUpdateText', (t as any).checkUpdate || 'Обновления');
+    el('t_downloadBtn', (t as any).downloadBtn || 'Скачать');
 
     if (siteDomainText) {
       if (currentDomain === 'global') {
@@ -147,6 +167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (neuralResolutionRow) neuralResolutionRow.style.display = isNeural ? 'flex' : 'none';
   }
 
+
   // Load Settings (Per-site profile with fallback to globalSettings)
   chrome.storage.local.get(['siteProfiles', 'globalSettings', 'frameGenSettings'], (result) => {
     siteProfilesMap = result.siteProfiles || {};
@@ -161,7 +182,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyLanguage(currentLang);
 
     framegenEngineSelect.value = s.framegenEngine ?? 'neural';
-    neuralModelSelect.value = s.neuralModel ?? 'v7s';
+    const modelVal = (s.neuralModel === 'v6' || s.neuralModel === 'tfact2') ? 'tfact2' : 'v7s';
+    neuralModelSelect.value = modelVal;
     neuralResolutionSelect.value = s.neuralResolution ?? 'native';
     updateEngineVisibility(s.framegenEngine ?? 'neural');
 
@@ -183,7 +205,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function updateSharpnessVisibility(scaler: string) {
     if (sharpnessRow) {
-      sharpnessRow.style.display = (scaler === 'fsr' || scaler === 'anime4k' || scaler === 'neural_sr') ? 'flex' : 'none';
+      sharpnessRow.style.display = (scaler === 'fsr' || scaler === 'anime4k') ? 'flex' : 'none';
     }
   }
 
@@ -201,12 +223,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   function getFormSettings(): ExtensionSettings {
     const sh = parseFloat(fsrSharpness.value);
     const bypassVal = parseInt(autoBypassFpsInput.value, 10);
+    const selectedModel = (neuralModelSelect.value === 'tfact2' || (neuralModelSelect.value as any) === 'v6') ? 'tfact2' : 'v7s';
     return {
       isEnabled: masterToggle.checked,
       language: currentLang,
       mode: activeMode,
       framegenEngine: (framegenEngineSelect.value as any) || 'neural',
-      neuralModel: (neuralModelSelect.value as any) || 'v7s',
+      neuralModel: selectedModel,
       neuralResolution: (neuralResolutionSelect.value as any) || 'native',
       multiplierMode: multiplierModeSelect.value as MultiplierMode,
       multiplier: parseInt(multiplierSelect.value, 10) as Multiplier,
@@ -226,19 +249,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   function saveAndApplySettings() {
     const updatedSettings = getFormSettings();
 
-    if (currentDomain !== 'global') {
-      siteProfilesMap[currentDomain] = updatedSettings;
-      chrome.storage.local.set({
-        siteProfiles: siteProfilesMap,
-        frameGenSettings: updatedSettings
-      });
-    } else {
-      globalSettingsObj = updatedSettings;
-      chrome.storage.local.set({
-        globalSettings: updatedSettings,
-        frameGenSettings: updatedSettings
-      });
+    if (currentDomain && currentDomain !== 'global') {
+      siteProfilesMap[currentDomain] = { ...updatedSettings };
     }
+    globalSettingsObj = { ...globalSettingsObj, ...updatedSettings };
+
+    chrome.storage.local.set({
+      globalSettings: globalSettingsObj,
+      frameGenSettings: updatedSettings,
+      siteProfiles: siteProfilesMap
+    });
 
     if (activeTabId) {
       chrome.tabs.sendMessage(activeTabId, {
@@ -281,9 +301,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     neuralResolutionSelect.value = 'native';
     scalerSelect.value = 'anime4k';
     multiplierModeSelect.value = 'target_fps';
+    targetFpsSelect.value = '60';
     updateMultiplierModeVisibility('target_fps');
     animeCadenceDetection.checked = true;
     updateEngineVisibility('neural');
+    updateSharpnessVisibility('anime4k');
     saveAndApplySettings();
   });
 
@@ -292,12 +314,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     setMode('hybrid');
     framegenEngineSelect.value = 'neural';
     neuralModelSelect.value = 'v7s';
-    neuralResolutionSelect.value = 'native';
+    neuralResolutionSelect.value = '720p';
     scalerSelect.value = 'fsr';
     multiplierModeSelect.value = 'target_fps';
+    targetFpsSelect.value = '60';
     updateMultiplierModeVisibility('target_fps');
     animeCadenceDetection.checked = false;
     updateEngineVisibility('neural');
+    updateSharpnessVisibility('fsr');
+    saveAndApplySettings();
+  });
+
+  presetUltraBtn?.addEventListener('click', () => {
+    masterToggle.checked = true;
+    setMode('hybrid');
+    framegenEngineSelect.value = 'neural';
+    neuralModelSelect.value = 'tfact2';
+    neuralResolutionSelect.value = 'native';
+    scalerSelect.value = 'anime4k';
+    multiplierModeSelect.value = 'target_fps';
+    targetFpsSelect.value = '165';
+    updateMultiplierModeVisibility('target_fps');
+    animeCadenceDetection.checked = true;
+    updateEngineVisibility('neural');
+    updateSharpnessVisibility('anime4k');
     saveAndApplySettings();
   });
 
@@ -309,9 +349,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     neuralResolutionSelect.value = '720p';
     scalerSelect.value = 'fsr';
     multiplierModeSelect.value = 'target_fps';
+    targetFpsSelect.value = '60';
     updateMultiplierModeVisibility('target_fps');
     animeCadenceDetection.checked = true;
     updateEngineVisibility('neural');
+    updateSharpnessVisibility('fsr');
     saveAndApplySettings();
   });
 
@@ -346,5 +388,118 @@ document.addEventListener('DOMContentLoaded', async () => {
       setMode(mode);
       saveAndApplySettings();
     });
+  });
+
+  // Update Checker Logic
+  function compareSemver(v1: string, v2: string): number {
+    const parse = (v: string) => v.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+    const p1 = parse(v1);
+    const p2 = parse(v2);
+    for (let i = 0; i < Math.max(p1.length, p2.length); i++) {
+      const num1 = p1[i] || 0;
+      const num2 = p2[i] || 0;
+      if (num1 > num2) return 1;
+      if (num1 < num2) return -1;
+    }
+    return 0;
+  }
+
+  async function checkUpdates(manual = false) {
+    if (!checkUpdateBtn || !checkUpdateText || !checkUpdateIcon) return;
+    const t = getTranslation(currentLang);
+
+    if (manual) {
+      checkUpdateIcon.textContent = '⏳';
+      checkUpdateText.textContent = (t as any).checkingUpdate || 'Поиск...';
+    }
+
+    try {
+      let remoteVersion: string | null = null;
+      let releasesUrl = 'https://github.com/demonqwe/framegen-webgpu/releases';
+
+      // 1. Fetch raw package.json directly from GitHub
+      try {
+        const res = await fetch('https://raw.githubusercontent.com/demonqwe/framegen-webgpu/dev/package.json', { cache: 'no-store' });
+        if (res.ok) {
+          const pkg = await res.json();
+          remoteVersion = pkg.version;
+        }
+      } catch {}
+
+      // 2. Fallback to GitHub Releases API if needed
+      if (!remoteVersion) {
+        try {
+          const res = await fetch('https://api.github.com/repos/demonqwe/framegen-webgpu/releases/latest');
+          if (res.ok) {
+            const rel = await res.json();
+            remoteVersion = rel.tag_name ? rel.tag_name.replace(/^v/, '') : null;
+            if (rel.html_url) releasesUrl = rel.html_url;
+          }
+        } catch {}
+      }
+
+      if (remoteVersion) {
+        const isNewer = compareSemver(remoteVersion, currentVersion) > 0;
+        if (isNewer) {
+          if (updateBanner) {
+            updateBanner.style.display = 'flex';
+          }
+          if (updateBannerTitle) {
+            updateBannerTitle.textContent = `${(t as any).updateBannerTitle || 'Доступно обновление'} v${remoteVersion}`;
+          }
+          if (updateBannerSub) {
+            updateBannerSub.textContent = `GitHub (Текущая: v${currentVersion})`;
+          }
+          if (updateDownloadLink) {
+            updateDownloadLink.href = releasesUrl;
+          }
+          checkUpdateBtn.classList.add('has-update');
+          checkUpdateIcon.textContent = '🚀';
+          checkUpdateText.textContent = `v${remoteVersion}`;
+
+          chrome.storage.local.set({ latestKnownVersion: remoteVersion, lastUpdateCheck: Date.now() });
+          return;
+        } else {
+          if (manual) {
+            checkUpdateIcon.textContent = '✅';
+            checkUpdateText.textContent = (t as any).upToDate || 'Актуально';
+            setTimeout(() => {
+              if (checkUpdateIcon && checkUpdateText) {
+                checkUpdateIcon.textContent = '🔄';
+                checkUpdateText.textContent = (t as any).checkUpdate || 'Обновления';
+              }
+            }, 3000);
+          }
+          chrome.storage.local.set({ latestKnownVersion: remoteVersion, lastUpdateCheck: Date.now() });
+          return;
+        }
+      }
+
+      throw new Error('No version data');
+    } catch {
+      if (manual) {
+        checkUpdateIcon.textContent = '⚠️';
+        checkUpdateText.textContent = (t as any).updateError || 'Ошибка';
+        setTimeout(() => {
+          if (checkUpdateIcon && checkUpdateText) {
+            checkUpdateIcon.textContent = '🔄';
+            checkUpdateText.textContent = (t as any).checkUpdate || 'Обновления';
+          }
+        }, 3000);
+      }
+    }
+  }
+
+  checkUpdateBtn?.addEventListener('click', () => checkUpdates(true));
+
+  // Check cached update state or check periodically
+  chrome.storage.local.get(['lastUpdateCheck', 'latestKnownVersion'], (data) => {
+    const lastCheck = data?.lastUpdateCheck || 0;
+    const cachedVer = data?.latestKnownVersion;
+    if (cachedVer && compareSemver(cachedVer, currentVersion) > 0) {
+      checkUpdates(false);
+    } else if (Date.now() - lastCheck > 4 * 3600 * 1000) {
+      checkUpdates(false);
+    }
   });
 });

@@ -8,9 +8,9 @@ export type OperationMode = 'hybrid' | 'generator_only' | 'upscale_only';
 export type Multiplier = 2 | 3 | 4;
 export type MultiplierMode = 'fixed' | 'target_fps';
 export type TargetResolution = '1440p' | '4k' | 'auto';
-export type ScalerAlgorithm = 'fsr' | 'anime4k' | 'neural_sr' | 'bicubic' | 'off';
+export type ScalerAlgorithm = 'fsr' | 'anime4k' | 'bicubic' | 'off';
 
-export type NeuralModelType = 'v7s' | 'tfact2';
+export type NeuralModelType = 'v7s' | 'tfact2' | 'v6';
 export type FramegenEngineType = 'neural' | 'motion_flow';
 export type NeuralResolution = 'native' | '720p' | '540p';
 
@@ -40,7 +40,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   mode: 'hybrid',
   framegenEngine: 'neural',
   neuralModel: 'v7s',
-  neuralResolution: 'native',
+  neuralResolution: '720p',
   multiplierMode: 'target_fps',
   multiplier: 2,
   targetFps: 60,
@@ -48,7 +48,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   scalerAlgorithm: 'fsr',
   autoBypassFps: 60,
   animeCadenceDetection: true,
-  cadenceThreshold: 0.005,
+  cadenceThreshold: 0.008,
   fsrSharpness: 0.8,
   showSideControls: true,
   showDebug: false

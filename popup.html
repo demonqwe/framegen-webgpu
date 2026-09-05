@@ -25,6 +25,19 @@
         <span class="slider"></span>
       </label>
     </header>
+
+    <!-- Update Notification Banner -->
+    <div id="updateBanner" class="update-banner" style="display: none;">
+      <div class="update-info">
+        <span class="update-rocket">🚀</span>
+        <div>
+          <div class="update-title" id="updateBannerTitle">Доступно обновление</div>
+          <div class="update-sub" id="updateBannerSub">v1.3.0 на GitHub</div>
+        </div>
+      </div>
+      <a id="updateDownloadLink" href="https://github.com/demonqwe/framegen-webgpu/releases" target="_blank" class="btn-update-download" id="t_downloadBtn">Скачать</a>
+    </div>
+
     <!-- Site Profile Bar -->
     <div class="site-profile-row">
       <div class="site-badge">
@@ -38,9 +51,10 @@
 
     <!-- Quick Presets -->
     <div class="presets-row">
-      <button type="button" class="preset-btn" id="presetAnimeBtn" title="Аниме: T-Fact2 + Anime4K + Каденс">🌸 Аниме</button>
-      <button type="button" class="preset-btn" id="presetCinemaBtn" title="Кино: v7 Small + FSR 1.0">🎬 Кино</button>
-      <button type="button" class="preset-btn" id="presetEcoBtn" title="Эко: v7s + 720p">⚡ Эко / 720p</button>
+      <button type="button" class="preset-btn" id="presetAnimeBtn" title="Аниме: T-Fact2 + Anime4K + Каденс">Аниме</button>
+      <button type="button" class="preset-btn" id="presetCinemaBtn" title="Кино: v7 Small + FSR 1.0">Кино</button>
+      <button type="button" class="preset-btn" id="presetUltraBtn" title="Ультра: T-Fact2 + 165 FPS">Ультра</button>
+      <button type="button" class="preset-btn" id="presetEcoBtn" title="Эко: v7s + 720p">Эко</button>
     </div>
 
     <!-- Mode Selector -->
@@ -83,7 +97,6 @@
         <select id="scalerSelect" class="select-box">
           <option value="fsr">AMD FSR 1.0 (EASU + RCAS)</option>
           <option value="anime4k">Anime4K v4.0 (Контуры аниме)</option>
-          <option value="neural_sr" id="t_scalerNeuralSR">Нейросеть (Super-Res x2)</option>
           <option value="bicubic">Bicubic Catmull-Rom (Сплайн)</option>
           <option value="off">Выкл (1:1 Direct)</option>
         </select>
@@ -159,9 +172,15 @@
       </div>
     </div>
 
-    <footer class="footer" style="display: flex; justify-content: space-between; align-items: center; color: #64748b; font-size: 10px; padding-top: 4px;">
-      <span id="t_footerHint">G: Вкл/Выкл • C: Сравнение • Shift+D: HUD</span>
-      <span style="color: #475569;">v1.2.0</span>
+    <footer class="footer">
+      <span id="t_footerHint">Alt+G: Вкл/Выкл • Alt+C: Сравнение • Shift+D: HUD</span>
+      <div class="version-badge">
+        <span id="currentVersionText" style="color: #475569; font-family: ui-monospace, monospace;">v1.3.0</span>
+        <button type="button" id="checkUpdateBtn" class="btn-check-update" title="Проверить обновления на GitHub">
+          <span id="checkUpdateIcon">🔄</span>
+          <span id="checkUpdateText">Обновления</span>
+        </button>
+      </div>
     </footer>
   </div>
 

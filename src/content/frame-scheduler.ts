@@ -12,13 +12,17 @@ export class FrameScheduler {
   private vfcHandle: number | null = null;
   private intermediateTimers: number[] = [];
 
-  // Triple-buffered frame textures for stable motion interpolation
+  // 12-texture ring pool (matching upstream MIN_FRAME_TEXTURES = 12) to completely eliminate GPU race conditions
+  private texturePool: GPUTexture[] = [];
+  private poolIndex = 0;
+  private readonly POOL_SIZE = 12;
   private texPrev: GPUTexture | null = null;
   private texCurr: GPUTexture | null = null;
   private texCapture: GPUTexture | null = null;
   private currentWidth = 0;
   private currentHeight = 0;
   private hasCapturedAnyT0 = false;
+  private duplicateSkips = 0;
 
   // Timing metadata & PLL clock
   private lastPresentedTime = 0;
@@ -66,6 +70,10 @@ export class FrameScheduler {
 
   private setupEventListeners(): void {
     this.video.addEventListener('seeked', this.onSeeked);
+    this.video.addEventListener('seeking', this.onSeeking);
+    this.video.addEventListener('waiting', this.onWaiting);
+    this.video.addEventListener('stalled', this.onWaiting);
+    this.video.addEventListener('canplay', this.onCanPlay);
     this.video.addEventListener('pause', this.onPause);
     this.video.addEventListener('playing', this.onPlay);
     this.video.addEventListener('ended', this.onEnded);
@@ -93,6 +101,10 @@ export class FrameScheduler {
 
   private removeEventListeners(): void {
     this.video.removeEventListener('seeked', this.onSeeked);
+    this.video.removeEventListener('seeking', this.onSeeking);
+    this.video.removeEventListener('waiting', this.onWaiting);
+    this.video.removeEventListener('stalled', this.onWaiting);
+    this.video.removeEventListener('canplay', this.onCanPlay);
     this.video.removeEventListener('pause', this.onPause);
     this.video.removeEventListener('playing', this.onPlay);
     this.video.removeEventListener('ended', this.onEnded);
@@ -118,6 +130,24 @@ export class FrameScheduler {
       this.lastArrival = performance.now();
       this.schedT = performance.now();
     }
+  };
+
+  private onWaiting = () => {
+    // Network buffer starvation: cancel all scheduled subframe timers immediately
+    this.clearTimers();
+    this.hasCapturedAnyT0 = false;
+    this.currentFps = 0;
+  };
+
+  private onSeeking = () => {
+    this.clearTimers();
+    this.resetFrameBuffers();
+  };
+
+  private onCanPlay = () => {
+    this.lastArrival = performance.now();
+    this.schedT = performance.now();
+    this.lastPresentedTime = this.video.currentTime;
   };
 
   private onSeeked = () => {
@@ -175,13 +205,12 @@ export class FrameScheduler {
   }
 
   private ensureTextures(width: number, height: number): void {
-    if (this.currentWidth === width && this.currentHeight === height && this.texPrev && this.texCurr && this.texCapture) {
+    if (this.currentWidth === width && this.currentHeight === height && this.texturePool.length === this.POOL_SIZE) {
       return;
     }
 
-    if (this.texPrev) this.texPrev.destroy();
-    if (this.texCurr) this.texCurr.destroy();
-    if (this.texCapture) this.texCapture.destroy();
+    this.texturePool.forEach(t => { try { t.destroy(); } catch {} });
+    this.texturePool = [];
 
     const desc: GPUTextureDescriptor = {
       size: [width, height],
@@ -192,9 +221,14 @@ export class FrameScheduler {
         GPUTextureUsage.RENDER_ATTACHMENT
     };
 
-    this.texPrev = this.device.createTexture({ ...desc, label: 'FrameScheduler_Prev' });
-    this.texCurr = this.device.createTexture({ ...desc, label: 'FrameScheduler_Curr' });
-    this.texCapture = this.device.createTexture({ ...desc, label: 'FrameScheduler_Capture' });
+    for (let i = 0; i < this.POOL_SIZE; i++) {
+      this.texturePool.push(this.device.createTexture({ ...desc, label: `FrameScheduler_Pool_${i}` }));
+    }
+
+    this.poolIndex = 0;
+    this.texCapture = this.texturePool[0];
+    this.texCurr = null;
+    this.texPrev = null;
 
     this.currentWidth = width;
     this.currentHeight = height;
@@ -247,18 +281,31 @@ export class FrameScheduler {
       return;
     }
 
+    // Buffer starvation check: if readyState < 3, playback is stalled waiting for network chunks
+    if (this.video.readyState < 3 || this.video.seeking) {
+      this.clearTimers();
+      this.hasCapturedAnyT0 = false;
+      this.currentFps = 0;
+    }
+
     // PLL-smoothed arrival clock (from cadence.js algorithms)
     const arrival = now || performance.now();
     const dt = arrival - this.lastArrival;
-    if (dt > 0.5 && dt < 500) {
-      this.intervalMs = this.intervalMs * 0.9 + dt * 0.1;
-    }
     this.lastArrival = arrival;
 
-    const expected = this.schedT + this.intervalMs;
-    this.schedT = (!this.schedT || Math.abs(arrival - expected) > 80)
-      ? arrival
-      : expected + 0.08 * (arrival - expected);
+    // Discontinuity / Network stall: if arrival interval was > 150ms, frame drop or buffering occurred.
+    // Reset scheduling and do NOT interpolate across this network gap!
+    if (dt > 150) {
+      this.schedT = arrival;
+      this.hasCapturedAnyT0 = false;
+      this.clearTimers();
+    } else if (dt > 0.5 && dt <= 150) {
+      this.intervalMs = this.intervalMs * 0.9 + dt * 0.1;
+      const expected = this.schedT + this.intervalMs;
+      this.schedT = (!this.schedT || Math.abs(arrival - expected) > 80)
+        ? arrival
+        : expected + 0.08 * (arrival - expected);
+    }
 
     const rawW = this.video.videoWidth || (this.video.clientWidth ? Math.round(this.video.clientWidth) : 1280);
     const rawH = this.video.videoHeight || (this.video.clientHeight ? Math.round(this.video.clientHeight) : 720);
@@ -274,10 +321,9 @@ export class FrameScheduler {
 
     this.ensureTextures(videoWidth, videoHeight);
 
-    if (!this.texCapture) {
-      this.scheduleNextVideoFrame();
-      return;
-    }
+    // Get next dedicated texture from the pool (idle for >= 5 frames, zero overwrite collision)
+    this.texCapture = this.texturePool[this.poolIndex];
+    this.poolIndex = (this.poolIndex + 1) % this.POOL_SIZE;
 
     // 1. Capture incoming video frame into texCapture
     const captured = await this.captureVideoFrame(videoWidth, videoHeight);
@@ -291,7 +337,13 @@ export class FrameScheduler {
     const deltaT = currentMediaTime - this.lastPresentedTime;
     this.lastPresentedTime = currentMediaTime;
 
-    if (deltaT > 0.005 && deltaT < 0.2) {
+    // If mediaTime stalled (buffering) or jumped (stall recovery > 100ms), do not interpolate across it!
+    if (deltaT <= 0.002 || deltaT > 0.1) {
+      this.hasCapturedAnyT0 = false;
+      this.clearTimers();
+    }
+
+    if (deltaT > 0.005 && deltaT < 0.1) {
       const detectedFps = Math.round(1 / deltaT);
       if (detectedFps >= 10 && detectedFps <= 240) {
         this.sourceFps = detectedFps;
@@ -303,39 +355,31 @@ export class FrameScheduler {
     // 3. Anime duplicate frame check
     const cadenceResult = await this.pipelineManager.evaluateCadence(this.texCapture, currentMediaTime, now);
 
-    // CRITICAL MUTEX: Await in-flight subframe rendering before rotating textures.
-    // Prevents writing to texCapture while interpolation reads from oldPrev/texPrev!
-    if (this.activeRenderPromise) {
-      try {
-        await this.activeRenderPromise;
-      } catch {}
-    }
-
-    // 4. Rotate textures in triple buffer
-    const oldPrev = this.texPrev;
+    // 4. Update frame references
     this.texPrev = this.texCurr;
     this.texCurr = this.texCapture;
-    this.texCapture = oldPrev || this.device.createTexture({
-      size: [videoWidth, videoHeight],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT
-    });
 
-    // 5. Render base frame -> Canvas (ALWAYS render to maintain source video cadence, never drop to 12 FPS!)
-    if (this.hasCapturedAnyT0) {
-      await this.renderFrame(this.texPrev || this.texCurr, videoWidth, videoHeight);
+    // 5. Evaluate whether interpolation will run
+    const isHighFpsSource = this.settings.multiplierMode === 'target_fps'
+      ? this.sourceFps >= this.settings.targetFps
+      : this.sourceFps >= this.settings.autoBypassFps;
+    const shouldInterpolate = !this.isCompareMode && this.settings.mode !== 'upscale_only' && !isHighFpsSource && this.hasCapturedAnyT0 && !!this.texPrev && !!this.texCurr;
+
+    // 6. Render base frame -> Canvas
+    // CHRONOLOGICAL ORDER:
+    // When interpolating, canvas displays texPrev at t=0, then subframes at t=0.5, and then next frame at t=1.0.
+    // Displaying texCurr here would show t=1.0 BEFORE the t=0.5 subframe, which was jumping back and forth in time and causing severe ghosting!
+    if (this.hasCapturedAnyT0 && shouldInterpolate && this.texPrev) {
+      await this.renderFrame(this.texPrev, videoWidth, videoHeight);
     } else {
       await this.renderFrame(this.texCurr, videoWidth, videoHeight);
     }
 
-    // 6. Schedule real motion-interpolated sub-frames if enabled
-    const isHighFpsSource = this.sourceFps >= this.settings.autoBypassFps;
-    const shouldInterpolate = !this.isCompareMode && this.settings.mode !== 'upscale_only' && !isHighFpsSource && this.hasCapturedAnyT0 && !!this.texPrev && !!this.texCurr;
-
+    // 7. Schedule real motion-interpolated sub-frames if enabled
     if (shouldInterpolate) {
       // Use PLL-smoothed intervalMs clamped to [16ms .. 100ms] to eliminate sudden drops to 24 FPS
       const durationMs = (deltaT > 0.015 && deltaT < 0.1) ? deltaT * 1000 : this.intervalMs;
-      this.scheduleSubframes(durationMs, videoWidth, videoHeight, this.texPrev!, this.texCurr!, cadenceResult.isDuplicate);
+      this.scheduleSubframes(durationMs, videoWidth, videoHeight, this.texPrev!, this.texCurr!, cadenceResult.isDuplicate, cadenceResult.isSceneCut);
     }
 
     this.hasCapturedAnyT0 = true;
@@ -374,18 +418,19 @@ export class FrameScheduler {
     height: number,
     t0Texture: GPUTexture,
     t1Texture: GPUTexture,
-    isDuplicate = false
+    isDuplicate = false,
+    isSceneCut = false
   ): void {
     this.clearTimers();
     const steps = this.pipelineManager.getInterpolationSteps(this.sourceFps);
-    const stableDuration = Math.min(100, Math.max(16, frameDurationMs));
+    const stableDuration = Math.min(100, Math.max(8, frameDurationMs));
 
     for (const step of steps) {
-      const delay = Math.max(4, Math.round(stableDuration * step));
+      const delay = Math.max(1, Math.round(stableDuration * step));
       const timer = window.setTimeout(() => {
         if (!this.isRunning || this.video.paused) return;
         if (this.isGpuRendering) return; // Drop subframe if GPU is busy to avoid queue buildup
-        this.renderInterpolated(t0Texture, t1Texture, step, width, height, isDuplicate);
+        this.renderInterpolated(t0Texture, t1Texture, step, width, height, isDuplicate, isSceneCut);
       }, delay);
       this.intermediateTimers.push(timer);
     }
@@ -399,7 +444,8 @@ export class FrameScheduler {
     stepT: number,
     srcWidth: number,
     srcHeight: number,
-    isDuplicate = false
+    isDuplicate = false,
+    isSceneCut = false
   ): void {
     if (this.isGpuRendering || !this.isRunning || this.video.paused) return;
     this.isGpuRendering = true;
@@ -415,10 +461,24 @@ export class FrameScheduler {
 
         const commandEncoder = this.device.createCommandEncoder({ label: 'FrameScheduler Interpolate' });
 
-        if (isDuplicate && this.settings.animeCadenceDetection) {
+        if (isSceneCut) {
+          // Hard cut on scene change: display T0 before t=0.5, and T1 at or after t=0.5.
+          // Completely eliminates ghostly morphing / blend artifacts on scene transitions!
+          const cutTexture = stepT < 0.5 ? t0Texture : t1Texture;
+          await this.pipelineManager.upscaleFrame(
+            commandEncoder,
+            cutTexture,
+            targetView,
+            srcWidth,
+            srcHeight,
+            targetWidth,
+            targetHeight
+          );
+        } else if (isDuplicate && this.settings.animeCadenceDetection) {
+          this.duplicateSkips++;
           // Smart Anime Cadence: frames are identical drawings.
           // Skip heavy neural motion estimation to eliminate line warping / artifacts,
-          // while maintaining rock-solid 60 FPS output cadence!
+          // while maintaining rock-solid output cadence!
           await this.pipelineManager.upscaleFrame(
             commandEncoder,
             t1Texture,
@@ -533,12 +593,15 @@ export class FrameScheduler {
     return this.video.paused ? 0 : this.renderLatencyMs;
   }
 
+  public getDuplicateSkips(): number {
+    return this.duplicateSkips;
+  }
+
   public destroy(): void {
     this.stop();
     this.removeEventListeners();
-    if (this.texPrev) this.texPrev.destroy();
-    if (this.texCurr) this.texCurr.destroy();
-    if (this.texCapture) this.texCapture.destroy();
+    this.texturePool.forEach(t => { try { t.destroy(); } catch {} });
+    this.texturePool = [];
     this.texPrev = null;
     this.texCurr = null;
     this.texCapture = null;
