@@ -52,7 +52,8 @@ export class PipelineManager {
     this.upscalerManager.setMode(settings.scalerAlgorithm);
     this.neuralFramegen = new NeuralFramegenEngine(device);
     if (settings.neuralModel) {
-      this.neuralFramegen.setModelType(settings.neuralModel);
+      const normalizedModel = (settings.neuralModel === 'v6' || (settings.neuralModel as any) === 'tfact2') ? 'tfact2' : 'v7s';
+      this.neuralFramegen.setModelType(normalizedModel);
     }
 
     // 1. Build FSR EASU pipeline
@@ -118,7 +119,8 @@ export class PipelineManager {
     this.settings = { ...this.settings, ...settings };
 
     if (settings.neuralModel !== undefined && settings.neuralModel !== oldModel) {
-      this.neuralFramegen.setModelType(settings.neuralModel);
+      const normalizedModel = (settings.neuralModel === 'v6' || (settings.neuralModel as any) === 'tfact2') ? 'tfact2' : 'v7s';
+      this.neuralFramegen.setModelType(normalizedModel);
     }
     if (settings.cadenceThreshold !== undefined) {
       this.cadenceDetector.setThreshold(settings.cadenceThreshold);
@@ -133,10 +135,6 @@ export class PipelineManager {
 
   public isOnnxActive(): boolean {
     return this.upscalerManager.isOnnxActive();
-  }
-
-  public getUpscalerLatencyMs(): number {
-    return this.upscalerManager.getLastLatencyMs();
   }
 
   /**
@@ -204,6 +202,7 @@ export class PipelineManager {
     if (!this.settings.animeCadenceDetection) {
       return {
         isDuplicate: false,
+        isSceneCut: false,
         difference: 1.0,
         prevUniqueEntry: null,
         currUniqueEntry: null,
@@ -459,14 +458,19 @@ export class PipelineManager {
   ): Promise<void> {
     let modelW = srcWidth;
     let modelH = srcHeight;
-    if (this.settings.neuralResolution === '720p') {
-      const scale = Math.min(1, 1280 / srcWidth, 720 / srcHeight);
-      modelW = Math.max(64, Math.round(srcWidth * scale));
-      modelH = Math.max(64, Math.round(srcHeight * scale));
-    } else if (this.settings.neuralResolution === '540p') {
+    if (this.settings.neuralResolution === '540p') {
       const scale = Math.min(1, 960 / srcWidth, 540 / srcHeight);
       modelW = Math.max(64, Math.round(srcWidth * scale));
       modelH = Math.max(64, Math.round(srcHeight * scale));
+    } else if (this.settings.neuralResolution === '720p') {
+      const scale = Math.min(1, 1280 / srcWidth, 720 / srcHeight);
+      modelW = Math.max(64, Math.round(srcWidth * scale));
+      modelH = Math.max(64, Math.round(srcHeight * scale));
+    } else {
+      // 'native' / '1080p' (Ultra: 1920x1088, exactly matches upstream Framegen SIZES[1080])
+      // Run neural model at full 1080p (1920x1088) even on 720p video streams
+      modelW = 1920;
+      modelH = 1088;
     }
 
     const alignedW = Math.max(64, Math.floor(modelW / 16) * 16);

@@ -10,6 +10,7 @@ export interface NeuralFramegenConfig {
 export class NeuralFramegenEngine {
   private device: GPUDevice;
   private currentModelType: FramegenModelType = 'v7s';
+  private activeRtModel: FramegenModelType | null = null;
   private rtInstance: any = null;
   private currentW = 0;
   private currentH = 0;
@@ -27,7 +28,7 @@ export class NeuralFramegenEngine {
   }
 
   public async setModelType(model: FramegenModelType): Promise<void> {
-    if (this.currentModelType === model && this.rtInstance) return;
+    if (this.currentModelType === model && this.activeRtModel === model && this.rtInstance) return;
     this.currentModelType = model;
     if (this.currentW > 0 && this.currentH > 0) {
       await this.initPipeline(this.currentW, this.currentH, true);
@@ -65,7 +66,7 @@ export class NeuralFramegenEngine {
     const w16 = Math.max(64, Math.floor(width / 16) * 16);
     const h16 = Math.max(64, Math.floor(height / 16) * 16);
 
-    if (!force && this.rtInstance && this.currentW === w16 && this.currentH === h16) {
+    if (!force && this.rtInstance && this.activeRtModel === this.currentModelType && this.currentW === w16 && this.currentH === h16) {
       return true;
     }
 
@@ -95,6 +96,7 @@ export class NeuralFramegenEngine {
 
       this.currentW = w16;
       this.currentH = h16;
+      this.activeRtModel = this.currentModelType;
       console.log(`[FrameGen] Neural WGSL runtime initialized (${this.currentModelType}, ${w16}x${h16})`);
       return true;
     } catch (err) {

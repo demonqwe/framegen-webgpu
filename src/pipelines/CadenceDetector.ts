@@ -9,6 +9,7 @@ export interface FrameHistoryEntry {
 
 export interface CadenceResult {
   isDuplicate: boolean;
+  isSceneCut: boolean;
   difference: number;
   prevUniqueEntry: FrameHistoryEntry | null;
   currUniqueEntry: FrameHistoryEntry | null;
@@ -24,13 +25,19 @@ export class CadenceDetector {
 
   // Ring buffer holding up to 4 unique frames
   private history: FrameHistoryEntry[] = [];
-  private threshold = 0.005;
+  private baseThreshold = 0.010;
+  private estimatedNoiseFloor = 0.003;
+  private effectiveThreshold = 0.010;
+  private readonly MIN_THRESHOLD = 0.006;
+  private readonly MAX_THRESHOLD = 0.018;
+
   private isMapping = false;
   private lastDifference = 1.0;
 
-  constructor(device: GPUDevice, threshold = 0.005) {
+  constructor(device: GPUDevice, threshold = 0.010) {
     this.device = device;
-    this.threshold = threshold;
+    this.baseThreshold = threshold;
+    this.effectiveThreshold = Math.min(this.MAX_THRESHOLD, Math.max(this.MIN_THRESHOLD, threshold));
 
     const module = device.createShaderModule({
       label: 'Cadence Diff Shader',
@@ -69,10 +76,6 @@ export class CadenceDetector {
     });
   }
 
-  public setThreshold(threshold: number): void {
-    this.threshold = threshold;
-  }
-
   /**
    * Evaluates if incoming frame is a duplicate of the previous frame.
    */
@@ -91,6 +94,7 @@ export class CadenceDetector {
       this.history.push(entry);
       return {
         isDuplicate: false,
+        isSceneCut: false,
         difference: 1.0,
         prevUniqueEntry: null,
         currUniqueEntry: entry,
@@ -147,8 +151,24 @@ export class CadenceDetector {
     }
 
     const difference = this.lastDifference;
+    const isSceneCut = difference >= 0.35;
 
-    const isDuplicate = difference < this.threshold;
+    // Adaptive Noise Floor update:
+    // When difference is in the sub-motion range (< 0.022) and not a scene cut,
+    // it represents compression artifacts / macroblock noise between repeated drawings.
+    if (difference < 0.022 && !isSceneCut) {
+      if (difference < this.estimatedNoiseFloor) {
+        // Fast drop if video stream is cleaner than estimated
+        this.estimatedNoiseFloor = this.estimatedNoiseFloor * 0.7 + difference * 0.3;
+      } else {
+        // Gentle rise to track compression noise spikes
+        this.estimatedNoiseFloor = this.estimatedNoiseFloor * 0.95 + difference * 0.05;
+      }
+      const adaptiveTarget = Math.max(this.baseThreshold, this.estimatedNoiseFloor * 1.4);
+      this.effectiveThreshold = Math.min(this.MAX_THRESHOLD, Math.max(this.MIN_THRESHOLD, adaptiveTarget));
+    }
+
+    const isDuplicate = difference < this.effectiveThreshold;
 
     const currEntry: FrameHistoryEntry = {
       texture: currTexture,
@@ -191,6 +211,7 @@ export class CadenceDetector {
 
     return {
       isDuplicate,
+      isSceneCut,
       difference,
       prevUniqueEntry: prevUnique,
       currUniqueEntry: currUnique,
@@ -198,8 +219,19 @@ export class CadenceDetector {
     };
   }
 
+  public setThreshold(val: number): void {
+    this.baseThreshold = val;
+    this.effectiveThreshold = Math.min(this.MAX_THRESHOLD, Math.max(this.MIN_THRESHOLD, val));
+  }
+
+  public getThreshold(): number {
+    return this.effectiveThreshold;
+  }
+
   public reset(): void {
     this.history = [];
+    this.estimatedNoiseFloor = 0.003;
+    this.effectiveThreshold = this.baseThreshold;
   }
 
   public destroy(): void {

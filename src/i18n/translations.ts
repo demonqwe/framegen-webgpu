@@ -61,7 +61,14 @@ export const TRANSLATIONS = {
     savedAsDefaultToast: 'Сохранено как шаблон по умолчанию!',
     
     // Updates & Footer
-    footerHint: 'G: Вкл/Выкл • C: Сравнение • Shift+D: HUD',
+    footerHint: 'Alt+G: Вкл/Выкл • Alt+C: Сравнение • Shift+D: HUD',
+    checkUpdate: 'Обновления',
+    checkingUpdate: 'Поиск...',
+    upToDate: 'Актуально',
+    updateAvailable: 'Обновить',
+    updateBannerTitle: 'Доступно обновление',
+    updateBannerSub: 'Новая версия на GitHub',
+    downloadBtn: 'Скачать',
     
     // Side Pill & HUD
     sideOn: 'ON',
@@ -138,7 +145,14 @@ export const TRANSLATIONS = {
     savedAsDefaultToast: 'Saved as default profile for new sites!',
     
     // Updates & Footer
-    footerHint: 'G: On/Off • C: Compare • Shift+D: HUD',
+    footerHint: 'Alt+G: On/Off • Alt+C: Compare • Shift+D: HUD',
+    checkUpdate: 'Updates',
+    checkingUpdate: 'Checking...',
+    upToDate: 'Up to date',
+    updateAvailable: 'Update',
+    updateBannerTitle: 'Update Available',
+    updateBannerSub: 'New version on GitHub',
+    downloadBtn: 'Download',
     
     // Side Pill & HUD
     sideOn: 'ON',
