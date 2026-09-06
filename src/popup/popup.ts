@@ -52,7 +52,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let activeMode: OperationMode = 'hybrid';
   let currentLang: Language = 'ru';
 
-  const currentVersion = (chrome.runtime?.getManifest ? chrome.runtime.getManifest().version : '1.2.0') || '1.2.0';
+  const currentVersion = (chrome.runtime?.getManifest ? chrome.runtime.getManifest().version : '1.3.1') || '1.3.1';
   if (currentVersionText) {
     currentVersionText.textContent = `v${currentVersion}`;
   }
@@ -64,8 +64,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Determine current site domain from active tab
   try {
-    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    const tab = tabs[0] || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0] || (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
     if (tab) {
       activeTabId = tab.id || null;
       if (tab.url) {
@@ -251,14 +251,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (currentDomain && currentDomain !== 'global') {
       siteProfilesMap[currentDomain] = { ...updatedSettings };
+      chrome.storage.local.set({
+        siteProfiles: siteProfilesMap
+      });
+    } else {
+      globalSettingsObj = { ...globalSettingsObj, ...updatedSettings };
+      chrome.storage.local.set({
+        globalSettings: globalSettingsObj
+      });
     }
-    globalSettingsObj = { ...globalSettingsObj, ...updatedSettings };
-
-    chrome.storage.local.set({
-      globalSettings: globalSettingsObj,
-      frameGenSettings: updatedSettings,
-      siteProfiles: siteProfilesMap
-    });
 
     if (activeTabId) {
       chrome.tabs.sendMessage(activeTabId, {
@@ -271,10 +272,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Set Default Template Button
   makeDefaultBtn?.addEventListener('click', () => {
     const current = getFormSettings();
-    globalSettingsObj = current;
+    globalSettingsObj = { ...current };
     chrome.storage.local.set({
-      globalSettings: current,
-      frameGenSettings: current
+      globalSettings: globalSettingsObj
     });
     const orig = makeDefaultBtn.textContent;
     makeDefaultBtn.textContent = '✅ Сохранено!';

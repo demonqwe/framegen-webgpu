@@ -2,7 +2,7 @@ import { initWebGPU, configureCanvas, GPUContextBundle } from '../webgpu/gpu-con
 import { OverlayManager } from './overlay-manager';
 import { FrameScheduler } from './frame-scheduler';
 import { PipelineManager } from '../core/PipelineManager';
-import { ExtensionSettings, DEFAULT_SETTINGS } from '../config/defaults';
+import { ExtensionSettings, DEFAULT_SETTINGS, getDomainFromUrl } from '../config/defaults';
 import { getTranslation } from '../i18n/translations';
 
 function isExtensionValid(): boolean {
@@ -39,58 +39,125 @@ class ContentController {
   private showDebugHud = false;
   private isAttaching = false;
 
+  private currentHost = '';
+  private topDomain = '';
   private settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
 
   constructor() {
     this.overlayManager = new OverlayManager();
+    this.currentHost = this.getHostName();
+    this.topDomain = this.resolveTopDomain();
     this.init();
   }
 
   private getHostName(): string {
     try {
-      return window.location.hostname.replace(/^www\./, '') || 'default';
+      return window.location.hostname.replace(/^www\./, '').toLowerCase() || 'default';
     } catch {
       return 'default';
     }
   }
 
+  private resolveTopDomain(): string {
+    if (window.self === window.top) {
+      return this.getHostName();
+    }
+
+    // 1. In Chromium, window.location.ancestorOrigins contains origins of all ancestor browsing contexts
+    try {
+      if (window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+        const topOrigin = window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1];
+        const parsed = getDomainFromUrl(topOrigin);
+        if (parsed && parsed !== 'global') {
+          return parsed;
+        }
+      }
+    } catch {}
+
+    // 2. Fallback to document.referrer
+    try {
+      if (document.referrer) {
+        const refDomain = getDomainFromUrl(document.referrer);
+        if (refDomain && refDomain !== 'global') {
+          return refDomain;
+        }
+      }
+    } catch {}
+
+    return this.getHostName();
+  }
+
+  private applyStorageData(result: any): void {
+    const siteProfiles = result?.siteProfiles || {};
+    const globalSettings = result?.globalSettings || DEFAULT_SETTINGS;
+
+    // Top domain profile has highest priority, then frame host profile, then global template
+    const targetProfile = (this.topDomain && siteProfiles[this.topDomain])
+      ? siteProfiles[this.topDomain]
+      : ((this.currentHost && siteProfiles[this.currentHost]) ? siteProfiles[this.currentHost] : null);
+
+    if (targetProfile) {
+      this.settings = { ...this.settings, ...globalSettings, ...targetProfile };
+    } else {
+      this.settings = { ...this.settings, ...globalSettings };
+    }
+
+    if (result && result.showDebug !== undefined) {
+      this.showDebugHud = !!result.showDebug;
+    }
+    if (isExtensionValid() && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.remove(['siteVsrOverrides']);
+    }
+  }
+
   private async init(): Promise<void> {
-    console.log(`[FrameGen WebGPU] Active in frame: ${window.location.href}`);
+    console.log(`[FrameGen WebGPU] Active in frame: ${window.location.href} (topDomain: ${this.topDomain})`);
 
-    const host = this.getHostName();
-
-    // 1. Load settings with site profile prioritized over global
-    safeStorageGet(['siteProfiles', 'globalSettings', 'frameGenSettings', 'showDebug', 'siteVsrOverrides'], (result) => {
-      const siteProfiles = result?.siteProfiles || {};
-      const globalSettings = result?.globalSettings || result?.frameGenSettings || DEFAULT_SETTINGS;
-
-      if (siteProfiles[host]) {
-        this.settings = { ...this.settings, ...globalSettings, ...siteProfiles[host] };
-      } else {
-        this.settings = { ...this.settings, ...globalSettings };
-      }
-
-      if (result && result.showDebug !== undefined) {
-        this.showDebugHud = !!result.showDebug;
-      }
-      if (isExtensionValid() && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.remove(['siteVsrOverrides']);
-      }
+    // 1. Initial load from storage using synchronous topDomain
+    safeStorageGet(['siteProfiles', 'globalSettings', 'showDebug', 'siteVsrOverrides'], (result) => {
+      this.applyStorageData(result);
       this.startVideoObservation();
     });
 
-    // 2. Listen for settings changes across frames
+    // 2. Query background worker for confirmed top domain if inside an iframe
+    if (isExtensionValid() && window.self !== window.top) {
+      try {
+        chrome.runtime.sendMessage({ type: 'GET_TAB_CONTEXT' }, (res) => {
+          if (chrome.runtime.lastError || !res?.tabDomain || res.tabDomain === 'global') return;
+          if (res.tabDomain !== this.topDomain) {
+            console.log(`[FrameGen WebGPU] Updated topDomain via background: ${this.topDomain} -> ${res.tabDomain}`);
+            this.topDomain = res.tabDomain;
+            safeStorageGet(['siteProfiles', 'globalSettings'], (resStorage) => {
+              this.applyStorageData(resStorage);
+              this.applyUpdatedSettings(this.settings);
+            });
+          }
+        });
+      } catch {}
+    }
+
+    // 3. Listen for settings changes across frames
     if (isExtensionValid() && chrome.storage && chrome.storage.onChanged) {
       try {
         chrome.storage.onChanged.addListener((changes, areaName) => {
           if (areaName === 'local') {
-            const currentHost = this.getHostName();
-            if (changes.frameGenSettings?.newValue) {
-              this.applyUpdatedSettings(changes.frameGenSettings.newValue);
-            } else if (changes.siteProfiles?.newValue?.[currentHost]) {
-              this.applyUpdatedSettings(changes.siteProfiles.newValue[currentHost]);
+            const targetDomain = this.topDomain || this.getHostName();
+            const host = this.currentHost || this.getHostName();
+
+            if (changes.siteProfiles?.newValue) {
+              const newProfiles = changes.siteProfiles.newValue;
+              if (targetDomain && newProfiles[targetDomain]) {
+                this.applyUpdatedSettings(newProfiles[targetDomain]);
+              } else if (host && newProfiles[host]) {
+                this.applyUpdatedSettings(newProfiles[host]);
+              }
             } else if (changes.globalSettings?.newValue) {
-              this.applyUpdatedSettings(changes.globalSettings.newValue);
+              safeStorageGet(['siteProfiles'], (res) => {
+                const profiles = res?.siteProfiles || {};
+                if (!profiles[targetDomain] && !profiles[host]) {
+                  this.applyUpdatedSettings(changes.globalSettings.newValue);
+                }
+              });
             }
 
             if (changes.showDebug !== undefined) {
@@ -594,20 +661,19 @@ class ContentController {
   private toastTimer: number | null = null;
 
   private toggleMaster(): void {
-    const host = this.getHostName();
+    const domainToSave = this.topDomain || this.currentHost || this.getHostName();
     this.settings.isEnabled = !this.settings.isEnabled;
 
     safeStorageGet(['siteProfiles'], (res) => {
       const profiles = res?.siteProfiles || {};
-      profiles[host] = { ...this.settings };
+      profiles[domainToSave] = { ...this.settings };
       safeStorageSet({
-        siteProfiles: profiles,
-        frameGenSettings: this.settings
+        siteProfiles: profiles
       });
     });
 
     this.applyUpdatedSettings(this.settings);
-    this.showToast(`${host}: ${this.settings.isEnabled ? 'ВКЛ (60 FPS)' : 'ВЫКЛ'}`);
+    this.showToast(`${domainToSave}: ${this.settings.isEnabled ? 'ВКЛ (60 FPS)' : 'ВЫКЛ'}`);
   }
 
   private toggleCompare(): void {
