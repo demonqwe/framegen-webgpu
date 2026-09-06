@@ -1,13 +1,11 @@
-/**
- * Chrome Extension Background Service Worker (Manifest V3)
- */
+import { getDomainFromUrl } from '../config/defaults';
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('[Anime FrameGen] Service Worker installed.');
 
   // Set default settings
-  chrome.storage.local.get(['frameGenSettings'], (result) => {
-    if (!result.frameGenSettings) {
+  chrome.storage.local.get(['globalSettings', 'frameGenSettings'], (result) => {
+    if (!result.globalSettings && !result.frameGenSettings) {
       chrome.storage.local.set({
         frameGenSettings: {
           enabled: true,
@@ -24,8 +22,19 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Relay messages if needed between popup and active tab
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// Relay messages if needed between popup and active tab, or provide tab context for iframes
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'GET_TAB_CONTEXT') {
+    const tabUrl = sender.tab?.url || '';
+    const tabDomain = getDomainFromUrl(tabUrl);
+    sendResponse({
+      tabUrl,
+      tabDomain,
+      frameId: sender.frameId
+    });
+    return false; // Synchronous response
+  }
+
   if (message.type === 'GET_ACTIVE_TAB_STATUS') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs.length > 0 && tabs[0].id) {
@@ -43,3 +52,4 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true; // async response
   }
 });
+
